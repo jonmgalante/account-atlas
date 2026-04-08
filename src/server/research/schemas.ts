@@ -17,7 +17,8 @@ const reportSectionSchema = z.enum([
 
 const confidenceScoreSchema = z.number().int().min(0).max(100);
 const sourceIdListSchema = z.array(z.number().int().positive()).min(1);
-const sourceUrlListSchema = z.array(z.string().url()).min(1);
+const sourceUrlSchema = z.string().min(1).max(2_048);
+const sourceUrlListSchema = z.array(sourceUrlSchema).min(1);
 
 const researchLinkedItemSchema = z.object({
   summary: z.string().min(1).max(500),
@@ -45,7 +46,7 @@ export const externalSourceEnrichmentSchema = z.object({
   entityResolution: entityResolutionSchema,
   discoveredSources: z.array(
     z.object({
-      url: z.string().url(),
+      url: sourceUrlSchema,
       title: z.string().min(1).max(300),
       sourceType: z.enum([
         "news_article",
