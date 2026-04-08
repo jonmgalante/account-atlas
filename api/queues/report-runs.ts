@@ -1,13 +1,25 @@
-import { QueueClient } from "@vercel/queue";
+// Vercel loads this queue callback as CommonJS at runtime, so it cannot use ESM imports.
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const { createHash } = require("node:crypto") as typeof import("node:crypto");
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const { QueueClient } = require("@vercel/queue") as typeof import("@vercel/queue");
 
-import { createReportRunQueueProxyToken } from "../../src/lib/queue-report-run-proxy-auth";
-import {
-  reportRunQueueProxyResponseSchema,
-  serializeQueueMessageMetadata,
-  type ReportRunQueueMessage,
-} from "../../src/lib/queue-report-run-proxy";
+type ReportRunQueueMessage = {
+  runId: number;
+};
+
+type SerializableQueueMessageMetadata = {
+  messageId: string;
+  deliveryCount: number;
+  createdAt: string;
+  expiresAt: string;
+  topicName: string;
+  consumerGroup: string;
+  region: string;
+};
 
 const queueClient = new QueueClient();
+const QUEUE_PROXY_CONTEXT = "account-atlas.report-run-queue.proxy";
 const QUEUE_PROXY_PATH = "/api/internal/queue/report-runs";
 const QUEUE_PROXY_TOKEN_HEADER = "x-account-atlas-queue-proxy-token";
 
@@ -16,6 +28,54 @@ class QueueProxyRetryError extends Error {
     super(`Queue proxy requested retry after ${afterSeconds} seconds.`);
     this.name = "QueueProxyRetryError";
   }
+}
+
+function createReportRunQueueProxyToken() {
+  const databaseUrl = process.env.DATABASE_URL ?? "";
+  const requestFingerprintSalt = process.env.REQUEST_FINGERPRINT_SALT ?? "";
+
+  if (!databaseUrl && !requestFingerprintSalt) {
+    throw new Error("Queue proxy token requires DATABASE_URL or REQUEST_FINGERPRINT_SALT.");
+  }
+
+  return createHash("sha256")
+    .update(QUEUE_PROXY_CONTEXT)
+    .update("\0")
+    .update(databaseUrl)
+    .update("\0")
+    .update(requestFingerprintSalt)
+    .digest("hex");
+}
+
+function serializeQueueMessageMetadata(metadata: {
+  messageId: string;
+  deliveryCount: number;
+  createdAt: Date;
+  expiresAt: Date;
+  topicName: string;
+  consumerGroup: string;
+  region: string;
+}): SerializableQueueMessageMetadata {
+  return {
+    messageId: metadata.messageId,
+    deliveryCount: metadata.deliveryCount,
+    createdAt: metadata.createdAt.toISOString(),
+    expiresAt: metadata.expiresAt.toISOString(),
+    topicName: metadata.topicName,
+    consumerGroup: metadata.consumerGroup,
+    region: metadata.region,
+  };
+}
+
+function parseQueueProxyRetryAfterSeconds(payload: unknown) {
+  if (!payload || typeof payload !== "object") {
+    return null;
+  }
+
+  const record = payload as { retryAfterSeconds?: unknown };
+  return typeof record.retryAfterSeconds === "number" && Number.isInteger(record.retryAfterSeconds) && record.retryAfterSeconds > 0
+    ? record.retryAfterSeconds
+    : null;
 }
 
 function getQueueProxyUrl() {
@@ -56,16 +116,16 @@ async function proxyReportRunMessage(message: ReportRunQueueMessage, metadata: P
   }
 
   const payload = await response.json().catch(() => null);
-  const parsed = reportRunQueueProxyResponseSchema.safeParse(payload);
+  const retryAfterSeconds = parseQueueProxyRetryAfterSeconds(payload);
 
-  if (parsed.success && "retryAfterSeconds" in parsed.data) {
-    throw new QueueProxyRetryError(parsed.data.retryAfterSeconds);
+  if (retryAfterSeconds) {
+    throw new QueueProxyRetryError(retryAfterSeconds);
   }
 
   throw new Error(`Queue proxy failed with status ${response.status}.`);
 }
 
-export default queueClient.handleNodeCallback<ReportRunQueueMessage>(proxyReportRunMessage, {
+module.exports = queueClient.handleNodeCallback<ReportRunQueueMessage>(proxyReportRunMessage, {
   retry(error, metadata) {
     if (error instanceof QueueProxyRetryError) {
       return { afterSeconds: error.afterSeconds };
