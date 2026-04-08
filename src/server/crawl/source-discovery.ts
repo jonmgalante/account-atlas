@@ -78,6 +78,7 @@ const ROOT_FALLBACKS: Array<{ path: string; sourceType: SourceType; priority: nu
   { path: "/status", sourceType: "status_page", priority: 730 },
   { path: "/changelog", sourceType: "changelog_page", priority: 720 },
 ];
+const SUBMITTED_START_PRIORITY = 1_100;
 
 function classifyPdfLink(url: URL, anchorText: string | null) {
   const target = `${url.pathname} ${anchorText ?? ""}`.toLowerCase();
@@ -194,7 +195,15 @@ export function buildInitialCrawlCandidates(startUrl: string, canonicalDomain: s
 
   if (seededStart) {
     const current = candidates.get(seededStart.url);
-    candidates.set(seededStart.url, current && current.priority > seededStart.priority ? current : seededStart);
+    const prioritizedStart = {
+      ...seededStart,
+      priority: Math.max(seededStart.priority, SUBMITTED_START_PRIORITY),
+    };
+
+    candidates.set(
+      prioritizedStart.url,
+      current && current.priority > prioritizedStart.priority ? current : prioritizedStart,
+    );
   }
 
   return [...candidates.values()].sort((left, right) => right.priority - left.priority);

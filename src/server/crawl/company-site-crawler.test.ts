@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { ReportRepository, StoredRunContext, UpsertArtifactInput, UpsertCrawledSourceInput } from "@/server/repositories/report-repository";
 import { createCompanySiteCrawler } from "@/server/crawl/company-site-crawler";
+import { PipelineStepError } from "@/server/pipeline/pipeline-errors";
 import { createInitialPipelineState } from "@/server/pipeline/pipeline-steps";
 
 function createRepositoryStub() {
@@ -240,6 +241,97 @@ describe("createCompanySiteCrawler", () => {
     expect(result.dedupedSources).toBe(1);
     expect(result.manifest.pdfUrls).toContain("https://openai.com/investors/annual-report.pdf");
     expect(stub.artifacts).toHaveLength(1);
+    expect(stub.events.some((event) => event.includes("Stored"))).toBe(true);
+  });
+
+  it("tries the submitted locale path before failing generic root fallbacks", async () => {
+    const stub = createRepositoryStub();
+    const crawler = createCompanySiteCrawler({
+      repository: stub.repository,
+      config: {
+        maxHtmlPages: 3,
+        maxPdfLinks: 0,
+        maxConcurrency: 1,
+        requestTimeoutMs: 1000,
+        maxResponseBytes: 500_000,
+        maxPdfBytes: 500_000,
+        maxRedirects: 2,
+        maxStoredTextChars: 10_000,
+        maxStoredMarkdownChars: 10_000,
+        blobThresholdBytes: 10_000,
+      },
+      fetchResource: async ({ url }) => {
+        if (url === "https://www.jll.com/" || url === "https://www.jll.com/about") {
+          throw new PipelineStepError("CRAWL_TOO_MANY_REDIRECTS", `Too many redirects while fetching ${url}.`);
+        }
+
+        if (url === "https://www.jll.com/en-us") {
+          return {
+            finalUrl: "https://www.jll.com/en-us/",
+            status: 200,
+            mimeType: "text/html",
+            buffer: Buffer.from("<html><body>JLL regional homepage</body></html>"),
+            retrievedAt: new Date("2026-04-07T12:00:00.000Z"),
+          };
+        }
+
+        throw new Error(`Unexpected URL: ${url}`);
+      },
+      parseDocument: ({ finalUrl }) => ({
+        title: "JLL",
+        canonicalUrl: finalUrl,
+        markdownContent: `# ${finalUrl}`,
+        textContent: `Text for ${finalUrl}`,
+        publishedAt: null,
+        updatedAtHint: null,
+        links: [],
+      }),
+      storeBlobArtifact: async () => null,
+    });
+
+    const context: StoredRunContext = {
+      report: {
+        id: 1,
+        shareId: "atlas67890",
+        status: "running",
+        normalizedInputUrl: "https://www.jll.com/en-us",
+        canonicalDomain: "jll.com",
+        companyName: null,
+        createdAt: new Date("2026-04-07T12:00:00.000Z"),
+        updatedAt: new Date("2026-04-07T12:00:00.000Z"),
+        completedAt: null,
+        failedAt: null,
+      },
+      run: {
+        id: 12,
+        reportId: 1,
+        attemptNumber: 1,
+        status: "fetching",
+        executionMode: "inline",
+        progressPercent: 25,
+        stepKey: "crawl_company_site",
+        statusMessage: "Crawling company site.",
+        pipelineState: createInitialPipelineState(),
+        queueMessageId: null,
+        vectorStoreId: null,
+        researchSummary: null,
+        accountPlan: null,
+        errorCode: null,
+        errorMessage: null,
+        createdAt: new Date("2026-04-07T12:00:00.000Z"),
+        updatedAt: new Date("2026-04-07T12:00:00.000Z"),
+        startedAt: new Date("2026-04-07T12:00:00.000Z"),
+        lastHeartbeatAt: null,
+        completedAt: null,
+        failedAt: null,
+      },
+    };
+
+    const result = await crawler.crawlCompanySite(context);
+
+    expect(result.pagesFetched).toBe(1);
+    expect(result.htmlPagesStored).toBe(1);
+    expect(result.manifest.visitedUrls[0]).toBe("https://www.jll.com/en-us");
     expect(stub.events.some((event) => event.includes("Stored"))).toBe(true);
   });
 });

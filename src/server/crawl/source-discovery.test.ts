@@ -37,9 +37,20 @@ describe("buildInitialCrawlCandidates", () => {
     const candidates = buildInitialCrawlCandidates("https://openai.com/platform", "openai.com");
     const urls = candidates.map((candidate) => candidate.url);
 
-    expect(urls[0]).toBe("https://openai.com/");
+    expect(urls[0]).toBe("https://openai.com/platform");
+    expect(urls[1]).toBe("https://openai.com/");
     expect(urls).toContain("https://openai.com/about");
     expect(urls).toContain("https://openai.com/pricing");
     expect(urls).toContain("https://openai.com/docs");
+  });
+
+  it("prioritizes the submitted locale path over generic root fallbacks", () => {
+    const candidates = buildInitialCrawlCandidates("https://www.jll.com/en-us", "jll.com");
+
+    expect(candidates[0]).toMatchObject({
+      url: "https://www.jll.com/en-us",
+      sourceType: "company_site",
+    });
+    expect(candidates[1]?.url).toBe("https://www.jll.com/");
   });
 });
