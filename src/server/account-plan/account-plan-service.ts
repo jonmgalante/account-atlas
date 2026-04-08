@@ -33,6 +33,10 @@ type AccountPlanServiceDependencies = {
   researchService?: ReturnType<typeof createResearchPipelineService>;
 };
 
+const ACCOUNT_PLAN_USE_CASE_TIMEOUT_MS = 90_000;
+const ACCOUNT_PLAN_NARRATIVE_TIMEOUT_MS = 75_000;
+const ACCOUNT_PLAN_OPENAI_MAX_ATTEMPTS = 1;
+
 function compactJson(value: unknown) {
   return JSON.stringify(value, null, 2);
 }
@@ -497,17 +501,9 @@ export function createAccountPlanService(dependencies: AccountPlanServiceDepende
         input: buildCandidateUseCasePrompt(workingContext, sources, facts, researchSummary),
         schema: candidateUseCaseGenerationSchema,
         schemaName: "account_plan_candidate_use_cases",
-        tools: workingContext.run.vectorStoreId
-          ? [
-              {
-                type: "file_search",
-                vector_store_ids: [workingContext.run.vectorStoreId],
-                max_num_results: 10,
-              },
-            ]
-          : undefined,
-        include: workingContext.run.vectorStoreId ? ["file_search_call.results"] : undefined,
         maxOutputTokens: 7_000,
+        timeoutMs: ACCOUNT_PLAN_USE_CASE_TIMEOUT_MS,
+        maxAttempts: ACCOUNT_PLAN_OPENAI_MAX_ATTEMPTS,
       });
 
       await appendStructuredDebugEvent(
@@ -531,17 +527,9 @@ export function createAccountPlanService(dependencies: AccountPlanServiceDepende
         input: buildAccountPlanNarrativePrompt(workingContext, sources, facts, researchSummary, rankedUseCases),
         schema: accountPlanNarrativeSchema,
         schemaName: "account_plan_narrative",
-        tools: workingContext.run.vectorStoreId
-          ? [
-              {
-                type: "file_search",
-                vector_store_ids: [workingContext.run.vectorStoreId],
-                max_num_results: 8,
-              },
-            ]
-          : undefined,
-        include: workingContext.run.vectorStoreId ? ["file_search_call.results"] : undefined,
         maxOutputTokens: 6_000,
+        timeoutMs: ACCOUNT_PLAN_NARRATIVE_TIMEOUT_MS,
+        maxAttempts: ACCOUNT_PLAN_OPENAI_MAX_ATTEMPTS,
       });
 
       await appendStructuredDebugEvent(

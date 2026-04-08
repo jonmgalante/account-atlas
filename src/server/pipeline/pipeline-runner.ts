@@ -47,7 +47,7 @@ const STEP_TIMEOUT_MS: Record<PipelineStepKey, number> = {
   crawl_company_site: 90_000,
   enrich_external_sources: 180_000,
   build_fact_base: 120_000,
-  generate_account_plan: 120_000,
+  generate_account_plan: 240_000,
   export_markdown: 30_000,
   export_pdf: 60_000,
   finalize_report: 15_000,

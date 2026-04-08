@@ -315,7 +315,15 @@ function createCandidateUseCases() {
   }));
 }
 
-function createOpenAIStub(): OpenAIResearchClient {
+function createOpenAIStub(
+  parseCalls: Array<{
+    schemaName: string;
+    tools?: Array<Record<string, unknown>>;
+    include?: Array<"web_search_call.action.sources" | "file_search_call.results">;
+    timeoutMs?: number;
+    maxAttempts?: number;
+  }> = [],
+): OpenAIResearchClient {
   return {
     isConfigured() {
       return true;
@@ -329,7 +337,15 @@ function createOpenAIStub(): OpenAIResearchClient {
     async attachFileToVectorStoreAndPoll() {
       throw new Error("Not needed");
     },
-    async parseStructuredOutput({ schemaName }) {
+    async parseStructuredOutput({ schemaName, tools, include, timeoutMs, maxAttempts }) {
+      parseCalls.push({
+        schemaName,
+        tools,
+        include,
+        timeoutMs,
+        maxAttempts,
+      });
+
       if (schemaName === "account_plan_candidate_use_cases") {
         return {
           responseId: "resp_use_cases",
@@ -493,9 +509,16 @@ function createOpenAIStub(): OpenAIResearchClient {
 describe("createAccountPlanService", () => {
   it("persists ranked use cases, stakeholders, and a final account plan", async () => {
     const stub = createRepositoryStub();
+    const parseCalls: Array<{
+      schemaName: string;
+      tools?: Array<Record<string, unknown>>;
+      include?: Array<"web_search_call.action.sources" | "file_search_call.results">;
+      timeoutMs?: number;
+      maxAttempts?: number;
+    }> = [];
     const service = createAccountPlanService({
       repository: stub.repository,
-      openAIClient: createOpenAIStub(),
+      openAIClient: createOpenAIStub(parseCalls),
     });
 
     const message = await service.generateAccountPlan(stub.context);
@@ -509,6 +532,22 @@ describe("createAccountPlanService", () => {
     expect(stub.context.run.accountPlan?.topUseCases[0]?.scorecard.priorityScore).toBe(87.45);
     expect(stub.events.some((event) => event.eventType === "account_plan.completed")).toBe(true);
     expect(stub.artifacts).toHaveLength(1);
+    expect(parseCalls).toEqual([
+      {
+        schemaName: "account_plan_candidate_use_cases",
+        tools: undefined,
+        include: undefined,
+        timeoutMs: 90_000,
+        maxAttempts: 1,
+      },
+      {
+        schemaName: "account_plan_narrative",
+        tools: undefined,
+        include: undefined,
+        timeoutMs: 75_000,
+        maxAttempts: 1,
+      },
+    ]);
   });
 
   it("skips cleanly when OPENAI_API_KEY is not configured", async () => {

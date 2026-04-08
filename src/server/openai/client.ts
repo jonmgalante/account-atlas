@@ -9,8 +9,8 @@ import { logServerEvent } from "@/server/observability/logger";
 import { retryWithBackoff, withTimeout } from "@/server/reliability/retry";
 
 type JsonRecord = Record<string, unknown>;
-const OPENAI_TIMEOUT_MS = 45_000;
-const OPENAI_MAX_ATTEMPTS = 3;
+const DEFAULT_OPENAI_TIMEOUT_MS = 45_000;
+const DEFAULT_OPENAI_MAX_ATTEMPTS = 3;
 
 export type OpenAIWebSearchSource = {
   url: string;
@@ -81,6 +81,8 @@ export type OpenAIResearchClient = {
     include?: Array<"web_search_call.action.sources" | "file_search_call.results">;
     metadata?: Record<string, string>;
     maxOutputTokens?: number;
+    timeoutMs?: number;
+    maxAttempts?: number;
   }): Promise<ParsedStructuredResponse<z.infer<T>>>;
 };
 
@@ -188,15 +190,25 @@ export function createOpenAIResearchClient(overrides: { client?: OpenAI } = {}):
     );
   }
 
-  async function withOpenAIRetry<T>(operationName: string, operation: () => Promise<T>) {
+  async function withOpenAIRetry<T>(
+    operationName: string,
+    operation: () => Promise<T>,
+    options: {
+      timeoutMs?: number;
+      maxAttempts?: number;
+    } = {},
+  ) {
+    const timeoutMs = options.timeoutMs ?? DEFAULT_OPENAI_TIMEOUT_MS;
+    const maxAttempts = options.maxAttempts ?? DEFAULT_OPENAI_MAX_ATTEMPTS;
+
     return retryWithBackoff(
       async () =>
         withTimeout(operation, {
-          timeoutMs: OPENAI_TIMEOUT_MS,
+          timeoutMs,
           label: operationName,
         }),
       {
-        maxAttempts: OPENAI_MAX_ATTEMPTS,
+        maxAttempts,
         baseDelayMs: 500,
         maxDelayMs: 4_000,
         shouldRetry: (error) => isRetryableOpenAIError(error),
@@ -282,20 +294,28 @@ export function createOpenAIResearchClient(overrides: { client?: OpenAI } = {}):
       include?: Array<"web_search_call.action.sources" | "file_search_call.results">;
       metadata?: Record<string, string>;
       maxOutputTokens?: number;
+      timeoutMs?: number;
+      maxAttempts?: number;
     }) {
-      const response = await withOpenAIRetry(`openai.parseStructuredOutput:${input.schemaName}`, () =>
-        resolveClient().responses.parse({
-          model: input.model,
-          instructions: input.instructions,
-          input: input.input,
-          tools: input.tools as never,
-          include: input.include as never,
-          metadata: input.metadata,
-          max_output_tokens: input.maxOutputTokens,
-          text: {
-            format: zodTextFormat(input.schema, input.schemaName),
-          },
-        }),
+      const response = await withOpenAIRetry(
+        `openai.parseStructuredOutput:${input.schemaName}`,
+        () =>
+          resolveClient().responses.parse({
+            model: input.model,
+            instructions: input.instructions,
+            input: input.input,
+            tools: input.tools as never,
+            include: input.include as never,
+            metadata: input.metadata,
+            max_output_tokens: input.maxOutputTokens,
+            text: {
+              format: zodTextFormat(input.schema, input.schemaName),
+            },
+          }),
+        {
+          timeoutMs: input.timeoutMs,
+          maxAttempts: input.maxAttempts,
+        },
       );
 
       if (!response.output_parsed) {
