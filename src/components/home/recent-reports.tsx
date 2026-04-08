@@ -29,7 +29,7 @@ export function RecentReports() {
   }, []);
 
   return (
-    <Card className="border-white/80 bg-white/78 shadow-panel">
+    <Card className="border-strong/80 bg-card/78 shadow-panel">
       <CardHeader className="space-y-3">
         <CardTitle className="text-2xl">Recent reports</CardTitle>
         <p className="text-sm leading-7 text-muted-foreground">

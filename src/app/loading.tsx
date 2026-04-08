@@ -10,7 +10,7 @@ export default function Loading() {
           <div className="h-14 w-full max-w-2xl animate-pulse rounded-3xl bg-muted" />
           <div className="h-6 w-full max-w-xl animate-pulse rounded-full bg-muted" />
         </div>
-        <Card className="border-white/70 bg-white/75">
+        <Card className="border-strong/70 bg-card/75">
           <CardHeader className="space-y-3">
             <div className="h-5 w-32 animate-pulse rounded-full bg-muted" />
             <div className="h-12 w-full animate-pulse rounded-2xl bg-muted" />
@@ -24,4 +24,3 @@ export default function Loading() {
     </SectionFrame>
   );
 }
-

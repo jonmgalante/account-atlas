@@ -90,7 +90,7 @@ export default function HomePage() {
 
             <div className="grid gap-3 md:grid-cols-3">
               {productHighlights.map((item) => (
-                <Card key={item.label} className="border-white/80 bg-white/78 shadow-panel">
+                <Card key={item.label} className="border-strong/80 bg-card/78 shadow-panel">
                   <CardHeader className="space-y-2 pb-3">
                     <div className="text-[11px] font-medium uppercase tracking-[0.22em] text-muted-foreground">
                       {item.label}
@@ -103,7 +103,7 @@ export default function HomePage() {
             </div>
 
             <div className="grid gap-4 md:grid-cols-3">
-              <Card className="border-white/80 bg-white/76 shadow-panel">
+              <Card className="border-strong/80 bg-card/76 shadow-panel">
                 <CardHeader className="space-y-2">
                   <Globe2 className="h-5 w-5 text-primary" />
                   <CardTitle className="text-xl">Public-company research</CardTitle>
@@ -112,7 +112,7 @@ export default function HomePage() {
                   The workflow starts from first-party company pages, then layers in current public signals and linked sources.
                 </CardContent>
               </Card>
-              <Card className="border-white/80 bg-white/76 shadow-panel">
+              <Card className="border-strong/80 bg-card/76 shadow-panel">
                 <CardHeader className="space-y-2">
                   <FileSearch className="h-5 w-5 text-primary" />
                   <CardTitle className="text-xl">Evidence first</CardTitle>
@@ -121,7 +121,7 @@ export default function HomePage() {
                   Major recommendations surface source references, and claims stay labeled as facts, inferences, or hypotheses.
                 </CardContent>
               </Card>
-              <Card className="border-white/80 bg-white/76 shadow-panel">
+              <Card className="border-strong/80 bg-card/76 shadow-panel">
                 <CardHeader className="space-y-2">
                   <ArrowRight className="h-5 w-5 text-primary" />
                   <CardTitle className="text-xl">Built for live demos</CardTitle>
@@ -139,7 +139,7 @@ export default function HomePage() {
 
       <SectionFrame className="pb-16 pt-2">
         <Container className="grid gap-6 lg:grid-cols-[1fr_0.95fr]">
-          <Card className="border-white/80 bg-white/78 shadow-panel">
+          <Card className="border-strong/80 bg-card/78 shadow-panel">
             <CardHeader className="space-y-4">
               <SectionHeading
                 eyebrow="Product flow"

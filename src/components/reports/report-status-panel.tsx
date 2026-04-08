@@ -71,7 +71,7 @@ function getStepIcon(status: NonNullable<ReportStatusShell["currentRun"]>["progr
 export function ReportStatusPanel({ status, isPolling, errorMessage }: ReportStatusPanelProps) {
   if (!status || !status.currentRun) {
     return (
-      <Card className="border-white/70 bg-white/75 shadow-panel">
+      <Card className="border-strong/70 bg-card/75 shadow-panel">
         <CardHeader className="space-y-3">
           <CardTitle className="text-2xl">Run status</CardTitle>
           <p className="text-sm leading-7 text-muted-foreground">
@@ -85,7 +85,7 @@ export function ReportStatusPanel({ status, isPolling, errorMessage }: ReportSta
   const currentRun = status.currentRun;
 
   return (
-    <Card className="border-white/80 bg-white/82 shadow-panel">
+    <Card className="border-strong/80 bg-card/82 shadow-panel">
       <CardHeader className="space-y-5">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="space-y-2">

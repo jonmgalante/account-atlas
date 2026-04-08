@@ -28,7 +28,7 @@ export default async function ReportPage({ params }: ReportPageProps) {
           <div className="flex flex-wrap items-center justify-between gap-3">
             <Link
               href="/"
-              className="inline-flex items-center gap-2 rounded-full border border-border/70 bg-white/80 px-4 py-2 text-sm text-foreground transition hover:border-primary/30 hover:text-primary"
+              className="inline-flex items-center gap-2 rounded-full border border-border/70 bg-card/80 px-4 py-2 text-sm text-foreground transition hover:border-primary/30 hover:text-primary"
             >
               <ArrowLeft className="h-4 w-4" />
               Back to submit
@@ -38,7 +38,7 @@ export default async function ReportPage({ params }: ReportPageProps) {
             </Badge>
           </div>
 
-          <Card className="border-white/70 bg-white/85 shadow-panel">
+          <Card className="border-strong/70 bg-card/85 shadow-panel">
             <CardHeader className="space-y-3">
               <div className="flex items-center gap-2 font-medium text-primary">
                 <AlertCircle className="h-4 w-4" />
@@ -69,7 +69,7 @@ export default async function ReportPage({ params }: ReportPageProps) {
     return (
       <SectionFrame className="py-12">
         <Container>
-          <Card className="border-white/70 bg-white/85 shadow-panel">
+          <Card className="border-strong/70 bg-card/85 shadow-panel">
             <CardContent className="p-6 text-sm leading-7 text-muted-foreground">
               The report metadata exists, but the full public document could not be loaded.
             </CardContent>

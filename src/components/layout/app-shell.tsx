@@ -9,7 +9,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         aria-hidden="true"
         className="pointer-events-none absolute inset-0 bg-atlas-grid bg-[size:48px_48px] opacity-40 [mask-image:linear-gradient(to_bottom,white,transparent_85%)]"
       />
-      <header className="relative z-10 border-b border-white/80 bg-white/72 backdrop-blur-xl">
+      <header className="relative z-10 border-b border-strong/80 bg-panel/72 backdrop-blur-xl">
         <div
           aria-hidden="true"
           className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-primary/40 to-transparent"
@@ -25,7 +25,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             </div>
           </Link>
           <div className="hidden items-center gap-3 lg:flex">
-            <div className="rounded-full border border-border/80 bg-background/80 px-3 py-1 text-[11px] font-medium uppercase tracking-[0.22em] text-muted-foreground">
+            <div className="rounded-full border border-border/80 bg-muted/90 px-3 py-1 text-[11px] font-medium uppercase tracking-[0.22em] text-muted-foreground">
               Public v1
             </div>
             <div className="text-sm text-muted-foreground">
@@ -37,7 +37,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
       <main className="relative z-10">{children}</main>
 
-      <footer className="relative z-10 border-t border-white/80 bg-white/65 py-6 backdrop-blur-xl">
+      <footer className="relative z-10 border-t border-strong/80 bg-panel/65 py-6 backdrop-blur-xl">
         <Container className="flex flex-col gap-2 text-sm text-muted-foreground sm:flex-row sm:items-center sm:justify-between">
           <p>Public company research, evidence-backed planning, and exportable account briefs.</p>
           <p>No auth in v1. Confidence, completeness, and thin-evidence warnings stay visible.</p>

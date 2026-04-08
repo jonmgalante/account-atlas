@@ -40,7 +40,7 @@ export function ReportSourcePanel({
   const displaySources = selectedSources.length > 0 ? selectedSources : sources.slice(0, 3);
 
   return (
-    <Card className="border-white/80 bg-white/92 shadow-panel">
+    <Card className="border-strong/80 bg-panel/92 shadow-panel">
       <CardHeader className="space-y-4">
         <div className="flex items-start justify-between gap-4">
           <div className="space-y-2">
@@ -102,14 +102,14 @@ export function ReportSourcePanel({
               </div>
 
               <div className="mt-3 flex flex-wrap gap-2 text-xs text-muted-foreground">
-                <span className="rounded-full border border-border/70 bg-white px-3 py-1">Tier: {source.sourceTier}</span>
+                <span className="rounded-full border border-border/70 bg-card px-3 py-1">Tier: {source.sourceTier}</span>
                 {source.publishedAt ? (
-                  <span className="rounded-full border border-border/70 bg-white px-3 py-1">
+                  <span className="rounded-full border border-border/70 bg-card px-3 py-1">
                     Published {formatDateTime(source.publishedAt)}
                   </span>
                 ) : null}
                 {source.retrievedAt ? (
-                  <span className="rounded-full border border-border/70 bg-white px-3 py-1">
+                  <span className="rounded-full border border-border/70 bg-card px-3 py-1">
                     Retrieved {formatDateTime(source.retrievedAt)}
                   </span>
                 ) : null}

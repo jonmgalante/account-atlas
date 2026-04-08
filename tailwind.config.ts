@@ -23,13 +23,24 @@ const config: Config = {
         border: "hsl(var(--border))",
         input: "hsl(var(--input))",
         ring: "hsl(var(--ring))",
+        tertiary: "hsl(var(--tertiary))",
+        strong: "hsl(var(--border-strong))",
         card: {
           DEFAULT: "hsl(var(--card))",
           foreground: "hsl(var(--card-foreground))",
         },
+        popover: {
+          DEFAULT: "hsl(var(--popover))",
+          foreground: "hsl(var(--popover-foreground))",
+        },
+        panel: {
+          DEFAULT: "hsl(var(--panel))",
+          foreground: "hsl(var(--panel-foreground))",
+        },
         primary: {
           DEFAULT: "hsl(var(--primary))",
           foreground: "hsl(var(--primary-foreground))",
+          hover: "hsl(var(--primary-hover))",
         },
         secondary: {
           DEFAULT: "hsl(var(--secondary))",
@@ -49,11 +60,11 @@ const config: Config = {
         },
       },
       boxShadow: {
-        panel: "0 20px 60px -30px rgba(14, 22, 38, 0.35)",
+        panel: "0 20px 60px -30px hsl(var(--foreground) / 0.16)",
       },
       backgroundImage: {
         "atlas-grid":
-          "linear-gradient(to right, rgba(24, 43, 89, 0.08) 1px, transparent 1px), linear-gradient(to bottom, rgba(24, 43, 89, 0.08) 1px, transparent 1px)",
+          "linear-gradient(to right, hsl(var(--border) / 0.75) 1px, transparent 1px), linear-gradient(to bottom, hsl(var(--border) / 0.75) 1px, transparent 1px)",
       },
     },
   },
@@ -61,4 +72,3 @@ const config: Config = {
 };
 
 export default config;
-

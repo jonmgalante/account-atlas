@@ -71,7 +71,7 @@ export function ReportUrlForm() {
   };
 
   return (
-    <Card className="overflow-hidden border-white/80 bg-white/84 shadow-panel">
+    <Card className="overflow-hidden border-strong/80 bg-card/84 shadow-panel">
       <CardHeader className="space-y-4">
         <div className="text-[11px] font-medium uppercase tracking-[0.22em] text-muted-foreground">Start a report run</div>
         <CardTitle className="text-3xl text-primary sm:text-[2.1rem]">Submit a public company URL</CardTitle>
@@ -137,7 +137,7 @@ export function ReportUrlForm() {
           </ul>
         </div>
 
-        <div className="rounded-[1.75rem] border border-primary/10 bg-gradient-to-br from-secondary/75 via-white to-background p-4 text-sm leading-7 text-secondary-foreground">
+        <div className="rounded-[1.75rem] border border-primary/10 bg-gradient-to-br from-secondary/75 via-card to-muted p-4 text-sm leading-7 text-muted-foreground">
           After submission you land on the public report page immediately, follow the live run status, and review the
           same share link as the research and planning sections complete.
         </div>

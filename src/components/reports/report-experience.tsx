@@ -108,7 +108,7 @@ function EmptySection({
   description: string;
 }) {
   return (
-    <Card className="border-dashed border-border/80 bg-gradient-to-br from-background/90 via-background/70 to-white/70 shadow-none">
+    <Card className="border-dashed border-border/80 bg-gradient-to-br from-muted/90 via-muted/70 to-card/70 shadow-none">
       <CardContent className="p-6 text-sm leading-7 text-muted-foreground">
         <div className="text-[11px] font-medium uppercase tracking-[0.22em] text-muted-foreground">Awaiting evidence</div>
         <div className="mt-2 font-medium text-foreground">{title}</div>
@@ -279,7 +279,7 @@ export function ReportExperience({
           <div className="flex flex-wrap items-center justify-between gap-3">
             <Link
               href="/"
-              className="inline-flex items-center gap-2 rounded-full border border-border/70 bg-white/82 px-4 py-2 text-sm text-foreground transition hover:border-primary/30 hover:text-primary"
+              className="inline-flex items-center gap-2 rounded-full border border-border/70 bg-card/82 px-4 py-2 text-sm text-foreground transition hover:border-primary/30 hover:text-primary"
             >
               <ArrowLeft className="h-4 w-4" />
               Back to submit
@@ -305,7 +305,7 @@ export function ReportExperience({
             </div>
           </div>
 
-          <Card className="overflow-hidden border-white/80 bg-white/88 shadow-panel">
+          <Card className="overflow-hidden border-strong/80 bg-card/88 shadow-panel">
             <CardHeader className="space-y-6">
               <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_18rem]">
                 <div className="space-y-4">
@@ -388,7 +388,7 @@ export function ReportExperience({
                 </div>
               </div>
 
-              <div className="flex flex-col gap-4 rounded-[1.75rem] border border-border/70 bg-gradient-to-br from-background/85 via-white to-secondary/35 p-5">
+              <div className="flex flex-col gap-4 rounded-[1.75rem] border border-border/70 bg-gradient-to-br from-muted/85 via-card to-secondary/60 p-5">
                 <div className="flex flex-wrap items-start justify-between gap-4">
                   <div className="space-y-2">
                     <div className="text-[11px] font-medium uppercase tracking-[0.22em] text-muted-foreground">
@@ -434,16 +434,16 @@ export function ReportExperience({
                     href={document.report.normalizedInputUrl}
                     target="_blank"
                     rel="noreferrer"
-                    className="inline-flex items-center gap-2 rounded-full border border-border/70 bg-white/80 px-4 py-2 transition hover:border-primary/30 hover:text-primary"
+                    className="inline-flex items-center gap-2 rounded-full border border-border/70 bg-card/80 px-4 py-2 transition hover:border-primary/30 hover:text-primary"
                   >
                     <Link2 className="h-4 w-4 text-primary" />
                     {document.report.normalizedInputUrl}
                   </a>
-                  <div className="inline-flex items-center gap-2 rounded-full border border-border/70 bg-white/80 px-4 py-2">
+                  <div className="inline-flex items-center gap-2 rounded-full border border-border/70 bg-card/80 px-4 py-2">
                     <Sparkles className="h-4 w-4 text-primary" />
                     Created {formatDateTime(document.report.createdAt)}
                   </div>
-                  <div className="inline-flex items-center gap-2 rounded-full border border-border/70 bg-white/80 px-4 py-2">
+                  <div className="inline-flex items-center gap-2 rounded-full border border-border/70 bg-card/80 px-4 py-2">
                     <LayoutList className="h-4 w-4 text-primary" />
                     {readySectionCount} of {document.sections.length} sections ready
                   </div>
@@ -460,7 +460,7 @@ export function ReportExperience({
 
           <nav
             aria-label="Report sections"
-            className="sticky top-[5rem] z-20 overflow-x-auto rounded-[1.75rem] border border-white/80 bg-white/88 px-3 py-3 shadow-panel backdrop-blur-xl"
+            className="sticky top-[5rem] z-20 overflow-x-auto rounded-[1.75rem] border border-strong/80 bg-panel/88 px-3 py-3 shadow-panel backdrop-blur-xl"
           >
             <div className="flex min-w-max items-center justify-between gap-3">
               <div className="hidden items-center gap-3 pl-2 sm:flex">
@@ -473,7 +473,7 @@ export function ReportExperience({
                   <a
                     key={item.id}
                     href={`#${item.id}`}
-                    className="rounded-full px-4 py-2 text-sm text-muted-foreground transition hover:bg-secondary hover:text-secondary-foreground"
+                    className="rounded-full px-4 py-2 text-sm text-muted-foreground transition hover:bg-accent hover:text-accent-foreground"
                   >
                     {item.label}
                   </a>
@@ -531,7 +531,7 @@ export function ReportExperience({
             description="A grounded summary of what the current evidence supports, where confidence is thinner, and how the overall motion recommendation should be interpreted."
           >
             <div className="grid gap-4 lg:grid-cols-[1.15fr_0.85fr]">
-              <Card className="border-white/70 bg-white/80 shadow-panel">
+              <Card className="border-strong/70 bg-card/80 shadow-panel">
                 <CardHeader className="space-y-3">
                   <CardTitle className="flex items-center gap-2 text-2xl">
                     <Target className="h-5 w-5 text-primary" />
@@ -563,7 +563,7 @@ export function ReportExperience({
                 </CardContent>
               </Card>
 
-              <Card className="border-white/70 bg-white/80 shadow-panel">
+              <Card className="border-strong/70 bg-card/80 shadow-panel">
                 <CardHeader className="space-y-3">
                   <CardTitle className="text-2xl">Company identity</CardTitle>
                 </CardHeader>
@@ -632,7 +632,7 @@ export function ReportExperience({
 
             <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
               {document.sectionAssessments.map((section) => (
-                <Card key={section.key} className="border-white/70 bg-white/75 shadow-none">
+                <Card key={section.key} className="border-strong/70 bg-card/75 shadow-none">
                   <CardContent className="space-y-3 p-5">
                     <div className="flex items-start justify-between gap-3">
                       <div>
@@ -662,7 +662,7 @@ export function ReportExperience({
           >
             {researchSummary ? (
               <div className="grid gap-4 lg:grid-cols-2">
-                <Card className="border-white/70 bg-white/80 shadow-none">
+                <Card className="border-strong/70 bg-card/80 shadow-none">
                   <CardHeader>
                     <CardTitle className="text-xl">Growth priorities</CardTitle>
                   </CardHeader>
@@ -689,7 +689,7 @@ export function ReportExperience({
                   </CardContent>
                 </Card>
 
-                <Card className="border-white/70 bg-white/80 shadow-none">
+                <Card className="border-strong/70 bg-card/80 shadow-none">
                   <CardHeader>
                     <CardTitle className="text-xl">Signal summary</CardTitle>
                   </CardHeader>
@@ -728,7 +728,7 @@ export function ReportExperience({
                   { title: "Complaint themes", items: researchSummary.complaintThemes },
                   { title: "Leadership and social themes", items: researchSummary.leadershipSocialThemes },
                 ].map((group) => (
-                  <Card key={group.title} className="border-white/70 bg-white/80 shadow-none">
+                  <Card key={group.title} className="border-strong/70 bg-card/80 shadow-none">
                     <CardHeader>
                       <CardTitle className="text-xl">{group.title}</CardTitle>
                     </CardHeader>
@@ -763,7 +763,7 @@ export function ReportExperience({
               />
             )}
 
-            <Card className="border-white/70 bg-white/80 shadow-none">
+            <Card className="border-strong/70 bg-card/80 shadow-none">
               <CardHeader>
                 <CardTitle className="text-2xl">Fact base</CardTitle>
               </CardHeader>
@@ -792,7 +792,7 @@ export function ReportExperience({
                         <p className="mt-2 text-sm leading-7 text-muted-foreground">{fact.rationale}</p>
                       ) : null}
                       {fact.evidenceSnippet ? (
-                        <div className="mt-3 rounded-3xl border border-border/70 bg-white/80 p-4 text-sm leading-7 text-muted-foreground">
+                        <div className="mt-3 rounded-3xl border border-border/70 bg-card/80 p-4 text-sm leading-7 text-muted-foreground">
                           {fact.evidenceSnippet}
                         </div>
                       ) : null}
@@ -825,7 +825,7 @@ export function ReportExperience({
               <div className="space-y-4">
                 <div className="grid gap-4 lg:grid-cols-3">
                   {accountPlan.topUseCases.map((useCase) => (
-                    <Card key={`top-${useCase.workflowName}`} className="border-white/70 bg-white/85 shadow-panel">
+                    <Card key={`top-${useCase.workflowName}`} className="border-strong/70 bg-card/85 shadow-panel">
                       <CardHeader className="space-y-3">
                         <div className="flex items-center justify-between gap-3">
                           <Badge variant="secondary" className="rounded-full px-3 py-1">
@@ -860,7 +860,7 @@ export function ReportExperience({
 
                 <div className="grid gap-4 xl:grid-cols-2">
                   {accountPlan.candidateUseCases.map((useCase) => (
-                    <Card key={useCase.workflowName} className="border-white/70 bg-white/80 shadow-none">
+                    <Card key={useCase.workflowName} className="border-strong/70 bg-card/80 shadow-none">
                       <CardHeader className="space-y-3">
                         <div className="flex flex-wrap items-center justify-between gap-3">
                           <div className="space-y-1">
@@ -961,7 +961,7 @@ export function ReportExperience({
                               ["Risk penalty", useCase.scorecard.riskPenalty],
                               ["Priority score", useCase.scorecard.priorityScore],
                             ].map(([label, value]) => (
-                              <div key={label} className="rounded-2xl border border-border/70 bg-white px-3 py-2">
+                              <div key={label} className="rounded-2xl border border-border/70 bg-card px-3 py-2">
                                 <div className="text-xs uppercase tracking-[0.18em] text-muted-foreground">{label}</div>
                                 <div className="mt-1 font-medium text-foreground">{value}</div>
                               </div>
@@ -1006,7 +1006,7 @@ export function ReportExperience({
               <div className="space-y-4">
                 <div className="grid gap-4 xl:grid-cols-3">
                   {accountPlan.stakeholderHypotheses.map((stakeholder) => (
-                    <Card key={`${stakeholder.likelyRole}-${stakeholder.hypothesis}`} className="border-white/70 bg-white/80 shadow-none">
+                    <Card key={`${stakeholder.likelyRole}-${stakeholder.hypothesis}`} className="border-strong/70 bg-card/80 shadow-none">
                       <CardHeader className="space-y-2">
                         <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">
                           {stakeholder.department ?? "Cross-functional"}
@@ -1030,7 +1030,7 @@ export function ReportExperience({
                 </div>
 
                 <div className="grid gap-4 lg:grid-cols-2">
-                  <Card className="border-white/70 bg-white/80 shadow-none">
+                  <Card className="border-strong/70 bg-card/80 shadow-none">
                     <CardHeader>
                       <CardTitle className="text-xl">Likely objections and rebuttals</CardTitle>
                     </CardHeader>
@@ -1051,7 +1051,7 @@ export function ReportExperience({
                     </CardContent>
                   </Card>
 
-                  <Card className="border-white/70 bg-white/80 shadow-none">
+                  <Card className="border-strong/70 bg-card/80 shadow-none">
                     <CardHeader>
                       <CardTitle className="text-xl">Discovery questions</CardTitle>
                     </CardHeader>
@@ -1089,7 +1089,7 @@ export function ReportExperience({
           >
             {accountPlan ? (
               <div className="space-y-4">
-                <Card className="border-white/70 bg-white/85 shadow-panel">
+                <Card className="border-strong/70 bg-card/85 shadow-panel">
                   <CardHeader className="space-y-3">
                     <div className="flex flex-wrap items-center justify-between gap-3">
                       <CardTitle className="text-2xl">Pilot recommendation</CardTitle>
@@ -1145,7 +1145,7 @@ export function ReportExperience({
 
                 <div className="grid gap-4 xl:grid-cols-3">
                   {accountPlan.pilotPlan.phases.map((phase) => (
-                    <Card key={phase.name} className="border-white/70 bg-white/80 shadow-none">
+                    <Card key={phase.name} className="border-strong/70 bg-card/80 shadow-none">
                       <CardHeader className="space-y-2">
                         <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">{phase.duration}</div>
                         <CardTitle className="text-xl">{phase.name}</CardTitle>
@@ -1193,7 +1193,7 @@ export function ReportExperience({
                   { label: "Base case", scenario: accountPlan.expansionScenarios.base },
                   { label: "High case", scenario: accountPlan.expansionScenarios.high },
                 ].map(({ label, scenario }) => (
-                  <Card key={label} className="border-white/70 bg-white/80 shadow-none">
+                  <Card key={label} className="border-strong/70 bg-card/80 shadow-none">
                     <CardHeader>
                       <CardTitle className="text-xl">{label}</CardTitle>
                     </CardHeader>
@@ -1241,7 +1241,7 @@ export function ReportExperience({
             {document.sources.length > 0 ? (
               <div className="grid gap-4">
                 {document.sources.map((source) => (
-                  <Card key={source.id} className="border-white/70 bg-white/80 shadow-none">
+                  <Card key={source.id} className="border-strong/70 bg-card/80 shadow-none">
                     <CardContent className="flex flex-col gap-4 p-5 lg:flex-row lg:items-start lg:justify-between">
                       <div className="min-w-0 flex-1 space-y-3">
                         <div className="flex flex-wrap items-center gap-2">
@@ -1301,7 +1301,7 @@ export function ReportExperience({
           </ReportSection>
 
           {!canShowCompletedReport ? (
-            <Card className="border-white/80 bg-white/82 shadow-none">
+            <Card className="border-strong/80 bg-card/82 shadow-none">
               <CardContent className="p-5 text-sm leading-7 text-muted-foreground">
                 The report is still building. Stay on this page to follow the live pipeline, or come back later using
                 the same public share link and recent reports list.
@@ -1320,7 +1320,7 @@ export function ReportExperience({
       {isMobileSourcePanelOpen ? (
         <div className="fixed inset-0 z-50 xl:hidden">
           <div className="absolute inset-0 bg-foreground/20 backdrop-blur-sm" onClick={() => setIsMobileSourcePanelOpen(false)} />
-          <div className="absolute inset-x-0 bottom-0 max-h-[82vh] overflow-y-auto rounded-t-[2rem] bg-background p-4">
+          <div className="absolute inset-x-0 bottom-0 max-h-[82vh] overflow-y-auto rounded-t-[2rem] bg-panel p-4">
             <ReportSourcePanel
               sources={document.sources}
               selectedSourceIds={selectedSourceIds}
