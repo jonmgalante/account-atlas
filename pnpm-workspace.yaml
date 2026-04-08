@@ -1,0 +1,5 @@
+packages:
+  - "."
+
+overrides:
+  jsdom: 25.0.1
