@@ -20,7 +20,7 @@ export function ReportUrlForm() {
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   useEffect(() => {
-    const urlFromQuery = searchParams.get("url");
+    const urlFromQuery = searchParams?.get("url");
 
     if (urlFromQuery) {
       setCompanyUrl(urlFromQuery);
