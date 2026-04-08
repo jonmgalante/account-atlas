@@ -1,0 +1,906 @@
+import "server-only";
+
+import { createPendingReportSections } from "@/lib/report-sections";
+import type { FinalAccountPlan } from "@/lib/types/account-plan";
+import type {
+  CreateReportResponse,
+  ReportArtifactRecord,
+  ReportContentState,
+  ReportDocument,
+  ReportFactRecord,
+  ReportPageModel,
+  ReportProgressEvent,
+  ReportSectionShell,
+  ReportSourceRecord,
+  ReportRunSummary,
+  ReportShell,
+  ReportThinEvidenceWarning,
+  ReportStatusShell,
+  ReportSummary,
+} from "@/lib/types/report";
+import type { ResearchSummary } from "@/lib/types/research";
+import { createShareId } from "@/lib/id";
+import { extractCanonicalDomain, normalizeCompanyUrl } from "@/lib/url";
+import { isDatabaseConfigError } from "@/server/db/client";
+import { serverEnv } from "@/env/server";
+import { logServerEvent } from "@/server/observability/logger";
+import { createPipelineDispatcher } from "@/server/pipeline/pipeline-dispatcher";
+import { coercePipelineStepKey, normalizePipelineState, serializePipelineProgress } from "@/server/pipeline/pipeline-steps";
+import { ReportCreatePolicyError } from "@/server/reporting/report-create-policy";
+import {
+  drizzleReportRepository,
+  type CreatedQueuedReportRecord,
+  type PersistedArtifact,
+  type ReportRepository,
+  type StoredReportShell,
+} from "@/server/repositories/report-repository";
+
+const MAX_SHARE_ID_ATTEMPTS = 12;
+const STATUS_POLL_INTERVAL_MS = 2_000;
+const NOT_FOUND_MESSAGE = "No saved report was found for this share link.";
+const DB_UNAVAILABLE_MESSAGE =
+  "Server-side persistence is not configured yet. Set DATABASE_URL and run the Drizzle migration to activate reports.";
+
+type ReportServiceDependencies = {
+  repository?: ReportRepository;
+  shareIdGenerator?: () => string;
+  dispatcher?: ReturnType<typeof createPipelineDispatcher>;
+};
+
+type CreateReportOptions = {
+  requesterHash?: string | null;
+};
+
+function createStatusUrl(shareId: string) {
+  return `/api/reports/${shareId}/status`;
+}
+
+function createArtifactDownloadPath(shareId: string, artifactType: PersistedArtifact["artifactType"]) {
+  return `/api/reports/${shareId}/artifacts/${artifactType}`;
+}
+
+function serializeReport(report: StoredReportShell["report"] | CreatedQueuedReportRecord["report"]): ReportSummary {
+  return {
+    shareId: report.shareId,
+    status: report.status,
+    normalizedInputUrl: report.normalizedInputUrl,
+    canonicalDomain: report.canonicalDomain,
+    companyName: report.companyName,
+    createdAt: report.createdAt.toISOString(),
+    updatedAt: report.updatedAt.toISOString(),
+    completedAt: report.completedAt?.toISOString() ?? null,
+  };
+}
+
+function serializeRun(
+  run: StoredReportShell["currentRun"] | CreatedQueuedReportRecord["currentRun"],
+): ReportRunSummary | null {
+  if (!run) {
+    return null;
+  }
+
+  const progress = serializePipelineProgress(normalizePipelineState(run.pipelineState));
+
+  return {
+    id: run.id,
+    status: run.status,
+    progressPercent: run.progressPercent,
+    stepKey: coercePipelineStepKey(run.stepKey),
+    stepLabel: progress.currentStepLabel,
+    executionMode: run.executionMode,
+    statusMessage: run.statusMessage,
+    errorCode: run.errorCode,
+    errorMessage: run.errorMessage,
+    createdAt: run.createdAt.toISOString(),
+    updatedAt: run.updatedAt.toISOString(),
+    startedAt: run.startedAt?.toISOString() ?? null,
+    completedAt: run.completedAt?.toISOString() ?? null,
+    failedAt: run.failedAt?.toISOString() ?? null,
+    progress,
+    researchSummary: (run.researchSummary ?? null) as ResearchSummary | null,
+    accountPlan: (run.accountPlan ?? null) as FinalAccountPlan | null,
+  };
+}
+
+function serializeEvent(event: StoredReportShell["recentEvents"][number]): ReportProgressEvent {
+  return {
+    id: event.id,
+    level: event.level,
+    eventType: event.eventType,
+    stepKey: coercePipelineStepKey(event.stepKey),
+    message: event.message,
+    occurredAt: event.occurredAt.toISOString(),
+  };
+}
+
+function serializeSource(source: Awaited<ReturnType<ReportRepository["listSourcesByRunId"]>>[number]): ReportSourceRecord {
+  const summaryCandidate =
+    typeof source.storagePointers.summary === "string"
+      ? source.storagePointers.summary
+      : source.textContent ?? source.markdownContent ?? null;
+
+  return {
+    id: source.id,
+    title: source.title ?? source.canonicalUrl,
+    url: source.canonicalUrl,
+    canonicalDomain: source.canonicalDomain,
+    sourceType: source.sourceType,
+    sourceTier: source.sourceTier,
+    mimeType: source.mimeType,
+    publishedAt: source.publishedAt?.toISOString() ?? null,
+    retrievedAt: source.retrievedAt?.toISOString() ?? null,
+    discoveredAt: source.discoveredAt.toISOString(),
+    summary: summaryCandidate ? summaryCandidate.replace(/\s+/g, " ").trim().slice(0, 420) : null,
+  };
+}
+
+function serializeFact(fact: Awaited<ReturnType<ReportRepository["listFactsByRunId"]>>[number]): ReportFactRecord {
+  return {
+    id: fact.id,
+    section: fact.section,
+    classification: fact.classification,
+    statement: fact.statement,
+    rationale: fact.rationale,
+    confidence: fact.confidence,
+    freshness: fact.freshness,
+    sentiment: fact.sentiment,
+    relevance: fact.relevance,
+    evidenceSnippet: fact.evidenceSnippet,
+    sourceIds: fact.sourceIds,
+  };
+}
+
+function serializeArtifact(
+  artifact: Awaited<ReturnType<ReportRepository["listArtifactsByRunId"]>>[number],
+  shareId: string,
+): ReportArtifactRecord {
+  return {
+    id: artifact.id,
+    artifactType: artifact.artifactType,
+    mimeType: artifact.mimeType,
+    fileName: artifact.fileName,
+    sizeBytes: artifact.sizeBytes,
+    contentHash: artifact.contentHash,
+    createdAt: artifact.createdAt.toISOString(),
+    updatedAt: artifact.updatedAt.toISOString(),
+    downloadPath: createArtifactDownloadPath(shareId, artifact.artifactType),
+  };
+}
+
+type ArtifactDownloadPayload =
+  | {
+      kind: "redirect";
+      url: string;
+      fileName: string;
+      mimeType: string;
+    }
+  | {
+      kind: "inline";
+      body: string | Buffer;
+      fileName: string;
+      mimeType: string;
+    };
+
+function getBlobUrl(storagePointers: Record<string, unknown>) {
+  const blob = storagePointers.blob;
+
+  if (!blob || typeof blob !== "object") {
+    return null;
+  }
+
+  const candidate = blob as Record<string, unknown>;
+  const downloadUrl = typeof candidate.downloadUrl === "string" ? candidate.downloadUrl : null;
+  const url = typeof candidate.url === "string" ? candidate.url : null;
+
+  return downloadUrl ?? url;
+}
+
+function resolveArtifactInlineBody(
+  artifact: PersistedArtifact,
+): ArtifactDownloadPayload | null {
+  const fileName = artifact.fileName ?? `${artifact.artifactType}.${artifact.artifactType === "markdown" ? "md" : "pdf"}`;
+  const storageMode =
+    typeof artifact.storagePointers.storageMode === "string" ? artifact.storagePointers.storageMode : null;
+
+  if (storageMode === "inline_text" && typeof artifact.storagePointers.inlineText === "string") {
+    return {
+      kind: "inline",
+      body: artifact.storagePointers.inlineText,
+      fileName,
+      mimeType: artifact.mimeType,
+    };
+  }
+
+  if (storageMode === "inline_base64" && typeof artifact.storagePointers.inlineBase64 === "string") {
+    return {
+      kind: "inline",
+      body: Buffer.from(artifact.storagePointers.inlineBase64, "base64"),
+      fileName,
+      mimeType: artifact.mimeType,
+    };
+  }
+
+  const redirectUrl = getBlobUrl(artifact.storagePointers);
+
+  if (redirectUrl) {
+    return {
+      kind: "redirect",
+      url: redirectUrl,
+      fileName,
+      mimeType: artifact.mimeType,
+    };
+  }
+
+  return null;
+}
+
+function isTerminalRunStatus(status: ReportRunSummary["status"]) {
+  return status === "completed" || status === "failed" || status === "cancelled";
+}
+
+function buildShellMessage(shell: StoredReportShell) {
+  if (!shell.currentRun) {
+    return "The report exists, but no run record is attached yet.";
+  }
+
+  if (shell.currentRun.status === "failed") {
+    return shell.currentRun.statusMessage;
+  }
+
+  if (shell.currentRun.status === "completed") {
+    return shell.currentRun.statusMessage;
+  }
+
+  return shell.currentRun.statusMessage;
+}
+
+function hasThinEvidence(currentRun: ReportRunSummary | null) {
+  return buildThinEvidenceWarnings(currentRun).some((warning) => warning.level === "warning");
+}
+
+function buildResultMeta(currentRun: ReportRunSummary | null) {
+  const partialDataAvailable = Boolean(currentRun?.researchSummary || currentRun?.accountPlan);
+  let state: ReportContentState = "pending";
+  let label = "In progress";
+  let summary = "The report pipeline is still collecting public evidence for this company.";
+
+  if (currentRun?.status === "failed" && partialDataAvailable) {
+    state = "partial";
+    label = "Partial report";
+    summary = "This run failed after persisting some research. Treat visible sections as partial and validate them before acting.";
+  } else if (currentRun?.status === "failed") {
+    state = "failed";
+    label = "Failed";
+    summary = "The latest run failed before any reliable report sections were persisted.";
+  } else if (currentRun?.accountPlan) {
+    state = "ready";
+    label = "Complete";
+    summary = "The report includes a completed account plan with source-backed recommendations and exports.";
+  } else if (currentRun?.researchSummary) {
+    state = "partial";
+    label = "Research only";
+    summary = "Research completed, but the final account plan did not fully persist. Treat the report as partial.";
+  } else if (currentRun?.status === "completed") {
+    state = "failed";
+    label = "Incomplete";
+    summary = "The pipeline completed without enough persisted evidence to render a reliable report.";
+  }
+
+  return {
+    state,
+    label,
+    summary,
+    hasThinEvidence: hasThinEvidence(currentRun),
+    hasPartialData: partialDataAvailable && state === "partial",
+  };
+}
+
+function buildReportTitle(report: ReportSummary) {
+  return report.companyName ? `${report.companyName} account plan` : `${report.canonicalDomain} account plan`;
+}
+
+function buildReportSummary(shell: ReportShell) {
+  if (shell.currentRun?.status === "completed" && shell.currentRun.accountPlan) {
+    return `This report run completed with a source-backed account plan, ${shell.currentRun.accountPlan.candidateUseCases.length} scored use cases, and an explicit ${shell.currentRun.accountPlan.overallAccountMotion.recommendedMotion} motion recommendation.`;
+  }
+
+  if (shell.currentRun?.status === "failed") {
+    return shell.result.hasPartialData
+      ? "This report contains partial evidence from a failed run. Treat visible sections as directional until a fresh run succeeds."
+      : "This report record exists, but the latest run failed before evidence-backed sections were produced.";
+  }
+
+  if (shell.currentRun?.status === "completed" && shell.currentRun.researchSummary) {
+    return "This report run completed with source-backed research, but the final account-plan sections did not fully persist. Treat it as a partial report.";
+  }
+
+  if (shell.currentRun?.status === "completed") {
+    return "This report run completed, but no persisted research summary was available for the share view.";
+  }
+
+  return "This shareable report exists server-side and is being processed through the report pipeline. No AI findings or customer data are being invented here.";
+}
+
+function buildReportSections(currentRun: ReportRunSummary | null): ReportSectionShell[] {
+  const sections = createPendingReportSections();
+
+  if (currentRun?.researchSummary) {
+    for (const key of ["company-brief", "fact-base", "ai-maturity-signals"] as const) {
+      const section = sections.find((entry) => entry.key === key);
+
+      if (section) {
+        section.status = "ready";
+      }
+    }
+  }
+
+  if (currentRun?.accountPlan) {
+    for (const key of [
+      "prioritized-use-cases",
+      "recommended-motion",
+      "stakeholder-hypotheses",
+      "objections",
+      "discovery-questions",
+      "pilot-plan",
+      "expansion-scenarios",
+    ] as const) {
+      const section = sections.find((entry) => entry.key === key);
+
+      if (section) {
+        section.status = "ready";
+      }
+    }
+  }
+
+  return sections;
+}
+
+function buildSectionAssessments(sections: ReportSectionShell[], currentRun: ReportRunSummary | null) {
+  const confidenceBySection = new Map(
+    currentRun?.researchSummary?.confidenceBySection.map((entry) => [entry.section, entry]) ?? [],
+  );
+
+  return sections.map((section) => {
+    const confidence = confidenceBySection.get(section.key);
+
+    return {
+      ...section,
+      confidence: confidence?.confidence ?? null,
+      confidenceRationale: confidence?.rationale ?? null,
+      completenessLabel:
+        section.status === "ready"
+          ? confidence?.confidence !== undefined
+            ? confidence.confidence >= 75
+              ? "Strong evidence"
+              : confidence.confidence >= 55
+                ? "Usable but incomplete"
+                : "Thin evidence"
+            : "Available"
+          : "Waiting on evidence",
+    };
+  });
+}
+
+function buildCompletenessSummary(sections: ReportSectionShell[], currentRun: ReportRunSummary | null) {
+  if (currentRun?.accountPlan) {
+    const readySections = sections.filter((section) => section.status === "ready").length;
+
+    return `${readySections} of ${sections.length} major sections populated`;
+  }
+
+  if (currentRun?.researchSummary) {
+    return `${currentRun.researchSummary.researchCompletenessScore}/100 research completeness`;
+  }
+
+  return `0 of ${sections.length} major sections populated`;
+}
+
+function buildConfidenceSummary(currentRun: ReportRunSummary | null) {
+  if (currentRun?.accountPlan && currentRun.researchSummary) {
+    const evidenceConfidenceScores = currentRun.accountPlan.topUseCases.map(
+      (useCase) => useCase.scorecard.evidenceConfidence,
+    );
+
+    if (evidenceConfidenceScores.length > 0) {
+      return `Overall research confidence: ${currentRun.researchSummary.overallConfidence}. Top use-case evidence confidence ranges from ${Math.min(...evidenceConfidenceScores)} to ${Math.max(...evidenceConfidenceScores)}.`;
+    }
+
+    return `Overall confidence: ${currentRun.researchSummary.overallConfidence}`;
+  }
+
+  if (currentRun?.researchSummary) {
+    return `Overall confidence: ${currentRun.researchSummary.overallConfidence}`;
+  }
+
+  if (currentRun?.status === "completed") {
+    return "The orchestration completed, but confidence remains thin because evidence coverage was incomplete.";
+  }
+
+  return "Not scored yet because source collection and synthesis have not started.";
+}
+
+function buildThinEvidenceWarnings(currentRun: ReportRunSummary | null): ReportThinEvidenceWarning[] {
+  if (!currentRun?.researchSummary) {
+    return currentRun?.status === "completed"
+      ? [
+          {
+            id: "missing-research-summary",
+            level: "warning",
+            title: "Research output is incomplete",
+            message: "The run completed, but no research summary was persisted for the public report view.",
+            sourceIds: [],
+          },
+        ]
+      : [];
+  }
+
+  const warnings: ReportThinEvidenceWarning[] = [];
+  const researchSummary = currentRun.researchSummary;
+
+  if (researchSummary.researchCompletenessScore < 70) {
+    warnings.push({
+      id: "low-completeness",
+      level: "warning",
+      title: "Research coverage is still thin",
+      message: `Research completeness is ${researchSummary.researchCompletenessScore}/100, so some sections should be treated as directional rather than conclusive.`,
+      sourceIds: researchSummary.sourceIds,
+    });
+  }
+
+  if (researchSummary.overallConfidence === "low") {
+    warnings.push({
+      id: "low-confidence",
+      level: "warning",
+      title: "Overall confidence is low",
+      message: "Available public evidence is limited or mixed, so recommendations and stakeholder hypotheses should be validated in discovery.",
+      sourceIds: researchSummary.sourceIds,
+    });
+  }
+
+  researchSummary.evidenceGaps.slice(0, 3).forEach((gap, index) => {
+    warnings.push({
+      id: `evidence-gap-${index + 1}`,
+      level: "info",
+      title: "Open evidence gap",
+      message: gap,
+      sourceIds: researchSummary.sourceIds,
+    });
+  });
+
+  const topUseCases = currentRun.accountPlan?.topUseCases ?? [];
+
+  if (topUseCases.some((useCase) => useCase.scorecard.evidenceConfidence < 65)) {
+    warnings.push({
+      id: "top-use-case-thin-evidence",
+      level: "warning",
+      title: "Some top recommendations still need validation",
+      message: "At least one prioritized use case has limited evidence confidence, so discovery questions should be resolved before committing to implementation scope.",
+      sourceIds: [...new Set(topUseCases.flatMap((useCase) => useCase.evidenceSourceIds))],
+    });
+  }
+
+  return warnings;
+}
+
+async function generateAvailableShareId(repository: ReportRepository, shareIdGenerator: () => string) {
+  for (let attempt = 0; attempt < MAX_SHARE_ID_ATTEMPTS; attempt += 1) {
+    const shareId = shareIdGenerator();
+
+    if (await repository.isShareIdAvailable(shareId)) {
+      return shareId;
+    }
+  }
+
+  throw new Error("Unable to allocate a unique report share ID.");
+}
+
+function serializeCreateResponse(input: {
+  shell: StoredReportShell;
+  disposition: CreateReportResponse["disposition"];
+  reuseReason: CreateReportResponse["reuseReason"];
+}) {
+  if (!input.shell.currentRun) {
+    throw new Error("Expected a current run when serializing a create-report response.");
+  }
+
+  return {
+    shareId: input.shell.report.shareId,
+    runId: input.shell.currentRun.id,
+    executionMode: input.shell.currentRun.executionMode,
+    disposition: input.disposition,
+    reuseReason: input.reuseReason,
+    report: serializeReport(input.shell.report),
+    currentRun: serializeRun(input.shell.currentRun)!,
+    message: buildShellMessage(input.shell),
+  } satisfies Omit<CreateReportResponse, "shareUrl" | "statusUrl">;
+}
+
+export function createReportService(dependencies: ReportServiceDependencies = {}) {
+  const repository = dependencies.repository ?? drizzleReportRepository;
+  const shareIdGenerator = dependencies.shareIdGenerator ?? createShareId;
+  const dispatcher = dependencies.dispatcher ?? createPipelineDispatcher();
+
+  return {
+    async createReport(
+      companyUrl: string,
+      options: CreateReportOptions = {},
+    ): Promise<Omit<CreateReportResponse, "shareUrl" | "statusUrl">> {
+      const normalizedInputUrl = normalizeCompanyUrl(companyUrl);
+      const canonicalDomain = extractCanonicalDomain(normalizedInputUrl);
+      const requesterHash = options.requesterHash ?? "anonymous-requester";
+      const latestByDomain = await repository.findLatestReportShellByCanonicalDomain(canonicalDomain);
+
+      if (latestByDomain?.currentRun) {
+        const recentReadyThreshold = new Date(Date.now() - serverEnv.REPORT_RECENT_REUSE_WINDOW_MS);
+        const activeCooldownThreshold = new Date(Date.now() - serverEnv.REPORT_DOMAIN_ACTIVE_COOLDOWN_MS);
+        const failedCooldownThreshold = new Date(Date.now() - serverEnv.REPORT_DOMAIN_FAILED_COOLDOWN_MS);
+
+        if (
+          latestByDomain.report.status === "ready" &&
+          latestByDomain.report.completedAt &&
+          latestByDomain.report.completedAt >= recentReadyThreshold
+        ) {
+          await repository.recordReportRequest({
+            requesterHash,
+            normalizedInputUrl,
+            canonicalDomain,
+            outcome: "reused_recent_completed",
+            reportId: latestByDomain.report.id,
+            shareId: latestByDomain.report.shareId,
+          });
+
+          logServerEvent("info", "report.create.reused_recent_completed", {
+            canonicalDomain,
+            shareId: latestByDomain.report.shareId,
+          });
+
+          return serializeCreateResponse({
+            shell: latestByDomain,
+            disposition: "reused",
+            reuseReason: "recent_completed",
+          });
+        }
+
+        if (
+          ["queued", "running"].includes(latestByDomain.report.status) &&
+          latestByDomain.report.updatedAt >= activeCooldownThreshold
+        ) {
+          await repository.recordReportRequest({
+            requesterHash,
+            normalizedInputUrl,
+            canonicalDomain,
+            outcome: "reused_in_progress",
+            reportId: latestByDomain.report.id,
+            shareId: latestByDomain.report.shareId,
+          });
+
+          logServerEvent("info", "report.create.reused_in_progress", {
+            canonicalDomain,
+            shareId: latestByDomain.report.shareId,
+          });
+
+          return serializeCreateResponse({
+            shell: latestByDomain,
+            disposition: "reused",
+            reuseReason: "in_progress",
+          });
+        }
+
+        if (
+          latestByDomain.report.status === "failed" &&
+          latestByDomain.report.updatedAt >= failedCooldownThreshold
+        ) {
+          await repository.recordReportRequest({
+            requesterHash,
+            normalizedInputUrl,
+            canonicalDomain,
+            outcome: "reused_recent_failed",
+            reportId: latestByDomain.report.id,
+            shareId: latestByDomain.report.shareId,
+          });
+
+          logServerEvent("warn", "report.create.reused_recent_failed", {
+            canonicalDomain,
+            shareId: latestByDomain.report.shareId,
+          });
+
+          return serializeCreateResponse({
+            shell: latestByDomain,
+            disposition: "reused",
+            reuseReason: "recent_failed",
+          });
+        }
+      }
+
+      const requestCount = await repository.countRecentRequestsByRequester({
+        requesterHash,
+        since: new Date(Date.now() - serverEnv.REPORT_CREATE_RATE_LIMIT_WINDOW_MS),
+      });
+
+      if (requestCount >= serverEnv.REPORT_CREATE_RATE_LIMIT_MAX) {
+        const retryAfterSeconds = Math.ceil(serverEnv.REPORT_CREATE_RATE_LIMIT_WINDOW_MS / 1_000);
+
+        await repository.recordReportRequest({
+          requesterHash,
+          normalizedInputUrl,
+          canonicalDomain,
+          outcome: "rate_limited",
+        });
+
+        logServerEvent("warn", "report.create.rate_limited", {
+          canonicalDomain,
+          requesterHash,
+          recentRequestCount: requestCount,
+          retryAfterSeconds,
+        });
+
+        throw new ReportCreatePolicyError(
+          "Too many new report requests from this client. Please wait before starting another run.",
+          retryAfterSeconds,
+        );
+      }
+
+      const shareId = await generateAvailableShareId(repository, shareIdGenerator);
+      const preferredExecutionMode = dispatcher.resolvePreferredExecutionMode();
+      const created = await repository.createQueuedReport({
+        shareId,
+        normalizedInputUrl,
+        canonicalDomain,
+        companyName: null,
+        executionMode: preferredExecutionMode,
+      });
+
+      let dispatchResult: Awaited<ReturnType<typeof dispatcher.dispatch>>;
+
+      try {
+        dispatchResult = await dispatcher.dispatch({
+          runId: created.currentRun.id,
+        });
+      } catch (error) {
+        const failedAt = new Date();
+        const errorMessage = error instanceof Error ? error.message : "Unable to start the report pipeline.";
+
+        await repository.updateRunStepState({
+          reportId: created.report.id,
+          runId: created.currentRun.id,
+          status: "failed",
+          stepKey: null,
+          progressPercent: 0,
+          statusMessage: "The report run could not be dispatched.",
+          executionMode: preferredExecutionMode,
+          pipelineState: created.currentRun.pipelineState,
+          queueMessageId: null,
+          failedAt,
+          errorCode: "PIPELINE_DISPATCH_FAILED",
+          errorMessage,
+          reportStatus: "failed",
+          reportFailedAt: failedAt,
+        });
+
+        await repository.appendRunEvent({
+          reportId: created.report.id,
+          runId: created.currentRun.id,
+          level: "error",
+          eventType: "pipeline.dispatch.failed",
+          message: `Failed to dispatch the report pipeline: ${errorMessage}`,
+          metadata: {
+            executionMode: preferredExecutionMode,
+          },
+        });
+
+        await repository.recordReportRequest({
+          requesterHash,
+          normalizedInputUrl,
+          canonicalDomain,
+          outcome: "dispatch_failed",
+          reportId: created.report.id,
+          shareId: created.report.shareId,
+        });
+
+        logServerEvent("error", "report.create.dispatch_failed", {
+          canonicalDomain,
+          shareId: created.report.shareId,
+          error,
+        });
+
+        throw error;
+      }
+
+      await repository.setRunDispatchState({
+        reportId: created.report.id,
+        runId: created.currentRun.id,
+        executionMode: dispatchResult.executionMode,
+        queueMessageId: dispatchResult.queueMessageId,
+        statusMessage: dispatchResult.statusMessage,
+      });
+
+      await repository.appendRunEvent({
+        reportId: created.report.id,
+        runId: created.currentRun.id,
+        level: "info",
+        eventType: "pipeline.dispatched",
+        message: dispatchResult.statusMessage,
+        metadata: {
+          executionMode: dispatchResult.executionMode,
+          queueMessageId: dispatchResult.queueMessageId,
+        },
+      });
+
+      await repository.recordReportRequest({
+        requesterHash,
+        normalizedInputUrl,
+        canonicalDomain,
+        outcome: "created",
+        reportId: created.report.id,
+        shareId: created.report.shareId,
+      });
+
+      logServerEvent("info", "report.create.created", {
+        canonicalDomain,
+        shareId: created.report.shareId,
+        runId: created.currentRun.id,
+        executionMode: dispatchResult.executionMode,
+      });
+
+      const refreshed = await repository.findReportShellByShareId(shareId);
+
+      if (!refreshed || !refreshed.currentRun) {
+        throw new Error("Created report run could not be reloaded after dispatch.");
+      }
+
+      return serializeCreateResponse({
+        shell: refreshed,
+        disposition: "created",
+        reuseReason: null,
+      });
+    },
+
+    async getReportShell(shareId: string): Promise<ReportShell | null> {
+      const shell = await repository.findReportShellByShareId(shareId);
+
+      if (!shell) {
+        return null;
+      }
+
+      const currentRun = serializeRun(shell.currentRun);
+
+      return {
+        report: serializeReport(shell.report),
+        currentRun,
+        sections: buildReportSections(currentRun),
+        result: buildResultMeta(currentRun),
+        message: buildShellMessage(shell),
+      };
+    },
+
+    async getReportDocument(shareId: string): Promise<ReportDocument | null> {
+      const shell = await repository.findReportShellByShareId(shareId);
+
+      if (!shell) {
+        return null;
+      }
+
+      const currentRun = serializeRun(shell.currentRun);
+      const sections = buildReportSections(currentRun);
+      const [sources, facts, artifacts] = shell.currentRun
+        ? await Promise.all([
+            repository.listSourcesByRunId(shell.currentRun.id),
+            repository.listFactsByRunId(shell.currentRun.id),
+            repository.listArtifactsByRunId(shell.currentRun.id),
+          ])
+        : [[], [], []];
+
+      return {
+        report: serializeReport(shell.report),
+        currentRun,
+        sections,
+        result: buildResultMeta(currentRun),
+        recentEvents: shell.recentEvents.map(serializeEvent),
+        facts: facts.map(serializeFact),
+        sources: sources.map(serializeSource),
+        artifacts: artifacts.map((artifact) => serializeArtifact(artifact, shell.report.shareId)),
+        sectionAssessments: buildSectionAssessments(sections, currentRun),
+        thinEvidenceWarnings: buildThinEvidenceWarnings(currentRun),
+        message: buildShellMessage(shell),
+      };
+    },
+
+    async getReportStatusShell(shareId: string): Promise<ReportStatusShell | null> {
+      const shell = await repository.findReportShellByShareId(shareId);
+
+      if (!shell) {
+        return null;
+      }
+
+      const currentRun = serializeRun(shell.currentRun);
+
+      return {
+        shareId,
+        statusUrl: createStatusUrl(shareId),
+        report: {
+          shareId: shell.report.shareId,
+          status: shell.report.status,
+          createdAt: shell.report.createdAt.toISOString(),
+          updatedAt: shell.report.updatedAt.toISOString(),
+          completedAt: shell.report.completedAt?.toISOString() ?? null,
+        },
+        currentRun,
+        result: buildResultMeta(currentRun),
+        recentEvents: shell.recentEvents.map(serializeEvent),
+        pollAfterMs: STATUS_POLL_INTERVAL_MS,
+        isTerminal: currentRun ? isTerminalRunStatus(currentRun.status) : shell.report.status === "ready",
+        message: buildShellMessage(shell),
+      };
+    },
+
+    async getReportPageModel(shareId: string): Promise<ReportPageModel> {
+      try {
+        const shell = await this.getReportShell(shareId);
+
+        if (!shell) {
+          return {
+            shareId,
+            status: "not-found",
+            title: "Report not found",
+            summary: NOT_FOUND_MESSAGE,
+            companyUrl: "No saved company URL is available for this share link.",
+            canonicalDomain: "unknown",
+            companyName: null,
+            createdAt: new Date().toISOString(),
+            sections: createPendingReportSections(),
+            completenessSummary: "0 of 10 major sections populated",
+            confidenceSummary: "Not scored because no source-backed evidence was found for this share link.",
+            message: NOT_FOUND_MESSAGE,
+          };
+        }
+
+        return {
+          shareId: shell.report.shareId,
+          status: shell.report.status,
+          title: buildReportTitle(shell.report),
+          summary: buildReportSummary(shell),
+          companyUrl: shell.report.normalizedInputUrl,
+          canonicalDomain: shell.report.canonicalDomain,
+          companyName: shell.report.companyName,
+          createdAt: shell.report.createdAt,
+          sections: shell.sections,
+          completenessSummary: buildCompletenessSummary(shell.sections, shell.currentRun),
+          confidenceSummary: buildConfidenceSummary(shell.currentRun),
+          message: shell.message,
+        };
+      } catch (error) {
+        if (isDatabaseConfigError(error)) {
+          return {
+            shareId,
+            status: "unavailable",
+            title: "Database setup required",
+            summary: DB_UNAVAILABLE_MESSAGE,
+            companyUrl: "DATABASE_URL is not configured.",
+            canonicalDomain: "unconfigured",
+            companyName: null,
+            createdAt: new Date().toISOString(),
+            sections: createPendingReportSections(),
+            completenessSummary: "0 of 10 major sections populated",
+            confidenceSummary: "Not scored because server-side persistence is not configured.",
+            message: DB_UNAVAILABLE_MESSAGE,
+          };
+        }
+
+        throw error;
+      }
+    },
+
+    async getArtifactDownload(
+      shareId: string,
+      artifactType: PersistedArtifact["artifactType"],
+    ): Promise<ArtifactDownloadPayload | null> {
+      const artifact = await repository.findArtifactByShareId(shareId, artifactType);
+
+      if (!artifact) {
+        return null;
+      }
+
+      return resolveArtifactInlineBody(artifact);
+    },
+  };
+}

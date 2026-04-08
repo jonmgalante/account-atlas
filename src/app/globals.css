@@ -1,0 +1,94 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 210 40% 98%;
+    --foreground: 223 35% 14%;
+    --card: 0 0% 100%;
+    --card-foreground: 223 35% 14%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 223 35% 14%;
+    --primary: 215 85% 24%;
+    --primary-foreground: 210 40% 98%;
+    --secondary: 193 68% 92%;
+    --secondary-foreground: 215 60% 18%;
+    --muted: 210 28% 93%;
+    --muted-foreground: 218 18% 38%;
+    --accent: 26 93% 56%;
+    --accent-foreground: 26 100% 12%;
+    --destructive: 0 76% 52%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 214 32% 88%;
+    --input: 214 32% 88%;
+    --ring: 213 90% 33%;
+    --radius: 1rem;
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    @apply min-h-screen bg-background text-foreground antialiased;
+    background-image:
+      radial-gradient(circle at top left, rgba(98, 155, 247, 0.2), transparent 30%),
+      radial-gradient(circle at top right, rgba(20, 92, 163, 0.1), transparent 28%),
+      radial-gradient(circle at 50% 18%, rgba(255, 255, 255, 0.85), transparent 26%),
+      linear-gradient(180deg, rgba(245, 248, 255, 0.92), rgba(255, 255, 255, 0.98));
+    font-family: "Avenir Next", "Segoe UI", sans-serif;
+    text-rendering: optimizeLegibility;
+  }
+
+  h1,
+  h2,
+  h3,
+  h4 {
+    font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", serif;
+    letter-spacing: -0.02em;
+    line-height: 1.05;
+  }
+
+  ::selection {
+    background: rgba(31, 76, 171, 0.16);
+  }
+}
+
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+
+  .atlas-orbit {
+    position: relative;
+    isolation: isolate;
+  }
+
+  .atlas-orbit::before,
+  .atlas-orbit::after {
+    content: "";
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    border-radius: 9999px;
+    border: 1px solid rgba(31, 76, 171, 0.12);
+    transform: translate(-50%, -50%);
+    pointer-events: none;
+  }
+
+  .atlas-orbit::before {
+    height: 14rem;
+    width: 14rem;
+  }
+
+  .atlas-orbit::after {
+    height: 8.75rem;
+    width: 8.75rem;
+    border-color: rgba(31, 76, 171, 0.16);
+  }
+}
