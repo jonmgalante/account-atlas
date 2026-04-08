@@ -127,7 +127,7 @@ pnpm db:generate
 
 ## Vercel Queue Setup Notes
 
-- Queue callback lives at [src/pages/api/queues/report-runs.ts](/Users/jongalante/Desktop/account-atlas/src/pages/api/queues/report-runs.ts).
+- Queue callback lives at [api/queues/report-runs.ts](/Users/jongalante/Desktop/account-atlas/api/queues/report-runs.ts).
 - Queue topic name is defined in [src/server/pipeline/pipeline-dispatcher.ts](/Users/jongalante/Desktop/account-atlas/src/server/pipeline/pipeline-dispatcher.ts).
 - [vercel.json](/Users/jongalante/Desktop/account-atlas/vercel.json) must route the queue callback correctly in deployed environments.
 - In local development, missing queue config falls back to inline execution unless queue-only mode is forced.

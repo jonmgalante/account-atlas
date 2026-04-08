@@ -2,13 +2,10 @@ import "server-only";
 
 import type { MessageHandler, RetryHandler } from "@vercel/queue";
 
+import type { ReportRunQueueMessage } from "@/lib/queue-report-run-proxy";
 import { logServerEvent } from "@/server/observability/logger";
 import { PipelineRunNotFoundError, PipelineStepError } from "@/server/pipeline/pipeline-errors";
 import { createReportPipelineRunner } from "@/server/pipeline/pipeline-runner";
-
-export type ReportRunQueueMessage = {
-  runId: number;
-};
 
 const pipelineRunner = createReportPipelineRunner();
 

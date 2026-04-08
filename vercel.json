@@ -1,6 +1,6 @@
 {
   "functions": {
-    "src/pages/api/queues/report-runs.ts": {
+    "api/queues/report-runs.ts": {
       "experimentalTriggers": [
         { "type": "queue/v2beta", "topic": "account-atlas-report-runs" }
       ]
