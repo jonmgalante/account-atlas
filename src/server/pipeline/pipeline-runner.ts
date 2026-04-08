@@ -45,7 +45,7 @@ type StepHandler = (context: StepHandlerContext) => Promise<string>;
 const STEP_TIMEOUT_MS: Record<PipelineStepKey, number> = {
   normalize_target: 10_000,
   crawl_company_site: 90_000,
-  enrich_external_sources: 180_000,
+  enrich_external_sources: 240_000,
   build_fact_base: 120_000,
   generate_account_plan: 240_000,
   export_markdown: 30_000,
@@ -174,6 +174,8 @@ function getStepStateLabel(status: PipelineStepStatus) {
   switch (status) {
     case "running":
       return "started";
+    case "retrying":
+      return "retrying";
     case "completed":
       return "completed";
     case "failed":
@@ -375,64 +377,124 @@ export function createReportPipelineRunner(dependencies: PipelineRunnerDependenc
           }
         } catch (error) {
           const errorDetails = getPipelineErrorDetails(error);
-          const failedState = clonePipelineState(runningState);
-          failedState.currentStepKey = step.key;
-          failedState.steps[step.key] = {
-            ...failedState.steps[step.key],
-            status: "failed",
-            errorCode: errorDetails.code,
-            errorMessage: errorDetails.message,
-          };
+          const attemptCount = runningState.steps[step.key].attemptCount;
+          const maxAttempts = STEP_MAX_ATTEMPTS[step.key];
+          const retryable = attemptCount < maxAttempts;
 
-          const failedMessage = `${step.label} failed: ${errorDetails.message}`;
-          const failedAt = new Date();
-
-          await repository.updateRunStepState({
-            reportId: currentContext.report.id,
-            runId: currentContext.run.id,
-            status: "failed",
-            stepKey: step.key,
-            progressPercent: getPipelineProgressBefore(step.key),
-            statusMessage: failedMessage,
-            executionMode: currentContext.run.executionMode,
-            pipelineState: failedState,
-            queueMessageId: input.queueMessageId ?? currentContext.run.queueMessageId,
-            startedAt,
-            failedAt,
-            errorCode: errorDetails.code,
-            errorMessage: errorDetails.message,
-            reportStatus: "failed",
-            reportFailedAt: failedAt,
-          });
-
-          await repository.appendRunEvent({
-            reportId: currentContext.report.id,
-            runId: currentContext.run.id,
-            level: "error",
-            eventType: "pipeline.step.failed",
-            stepKey: step.key,
-            message: failedMessage,
-            metadata: {
-              trigger: input.trigger,
-              stepStatus: getStepStateLabel("failed"),
+          if (retryable) {
+            const retryingState = clonePipelineState(runningState);
+            retryingState.currentStepKey = step.key;
+            retryingState.steps[step.key] = {
+              ...retryingState.steps[step.key],
+              status: "retrying",
               errorCode: errorDetails.code,
-            },
-          });
+              errorMessage: errorDetails.message,
+            };
 
-          logServerEvent("error", "pipeline.step.failed", {
-            shareId: currentContext.report.shareId,
-            runId: currentContext.run.id,
-            stepKey: step.key,
-            errorCode: errorDetails.code,
-            error,
-          });
+            const retryingMessage = `${step.label} hit a retryable error. Account Atlas will retry automatically (${attemptCount}/${maxAttempts} attempts used): ${errorDetails.message}`;
 
-          logServerEvent("error", "pipeline.run.failed", {
-            shareId: currentContext.report.shareId,
-            runId: currentContext.run.id,
-            stepKey: step.key,
-            errorCode: errorDetails.code,
-          });
+            await repository.updateRunStepState({
+              reportId: currentContext.report.id,
+              runId: currentContext.run.id,
+              status: step.runStatus,
+              stepKey: step.key,
+              progressPercent: getPipelineProgressBefore(step.key),
+              statusMessage: retryingMessage,
+              executionMode: currentContext.run.executionMode,
+              pipelineState: retryingState,
+              queueMessageId: input.queueMessageId ?? currentContext.run.queueMessageId,
+              startedAt,
+              errorCode: errorDetails.code,
+              errorMessage: errorDetails.message,
+              reportStatus: "running",
+            });
+
+            await repository.appendRunEvent({
+              reportId: currentContext.report.id,
+              runId: currentContext.run.id,
+              level: "warning",
+              eventType: "pipeline.step.retry_scheduled",
+              stepKey: step.key,
+              message: retryingMessage,
+              metadata: {
+                trigger: input.trigger,
+                stepStatus: getStepStateLabel("retrying"),
+                errorCode: errorDetails.code,
+                attemptCount,
+                maxAttempts,
+              },
+            });
+
+            logServerEvent("warn", "pipeline.step.retry_scheduled", {
+              shareId: currentContext.report.shareId,
+              runId: currentContext.run.id,
+              stepKey: step.key,
+              errorCode: errorDetails.code,
+              attemptCount,
+              maxAttempts,
+            });
+          } else {
+            const failedState = clonePipelineState(runningState);
+            failedState.currentStepKey = step.key;
+            failedState.steps[step.key] = {
+              ...failedState.steps[step.key],
+              status: "failed",
+              errorCode: errorDetails.code,
+              errorMessage: errorDetails.message,
+            };
+
+            const failedMessage = `${step.label} failed: ${errorDetails.message}`;
+            const failedAt = new Date();
+
+            await repository.updateRunStepState({
+              reportId: currentContext.report.id,
+              runId: currentContext.run.id,
+              status: "failed",
+              stepKey: step.key,
+              progressPercent: getPipelineProgressBefore(step.key),
+              statusMessage: failedMessage,
+              executionMode: currentContext.run.executionMode,
+              pipelineState: failedState,
+              queueMessageId: input.queueMessageId ?? currentContext.run.queueMessageId,
+              startedAt,
+              failedAt,
+              errorCode: errorDetails.code,
+              errorMessage: errorDetails.message,
+              reportStatus: "failed",
+              reportFailedAt: failedAt,
+            });
+
+            await repository.appendRunEvent({
+              reportId: currentContext.report.id,
+              runId: currentContext.run.id,
+              level: "error",
+              eventType: "pipeline.step.failed",
+              stepKey: step.key,
+              message: failedMessage,
+              metadata: {
+                trigger: input.trigger,
+                stepStatus: getStepStateLabel("failed"),
+                errorCode: errorDetails.code,
+                attemptCount,
+                maxAttempts,
+              },
+            });
+
+            logServerEvent("error", "pipeline.step.failed", {
+              shareId: currentContext.report.shareId,
+              runId: currentContext.run.id,
+              stepKey: step.key,
+              errorCode: errorDetails.code,
+              error,
+            });
+
+            logServerEvent("error", "pipeline.run.failed", {
+              shareId: currentContext.report.shareId,
+              runId: currentContext.run.id,
+              stepKey: step.key,
+              errorCode: errorDetails.code,
+            });
+          }
 
           throw error;
         }

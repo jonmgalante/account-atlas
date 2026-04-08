@@ -232,30 +232,59 @@ function createRepositoryStub() {
   };
 }
 
-function createOpenAIStub(): OpenAIResearchClient {
+function createOpenAIStub(
+  telemetry: {
+    parseCalls: Array<{
+      schemaName: string;
+      tools?: Array<Record<string, unknown>>;
+      include?: Array<"web_search_call.action.sources" | "file_search_call.results">;
+      timeoutMs?: number;
+      maxAttempts?: number;
+    }>;
+    createVectorStoreCalls: number;
+    uploadFileCalls: number;
+    attachFileCalls: number;
+  } = {
+    parseCalls: [],
+    createVectorStoreCalls: 0,
+    uploadFileCalls: 0,
+    attachFileCalls: 0,
+  },
+): OpenAIResearchClient {
   return {
     isConfigured() {
       return true;
     },
     async createVectorStore() {
+      telemetry.createVectorStoreCalls += 1;
       return {
         id: "vs_test_123",
         status: "completed",
       };
     },
     async uploadFile() {
+      telemetry.uploadFileCalls += 1;
       return {
         id: `file_${Math.random().toString(36).slice(2, 8)}`,
       };
     },
     async attachFileToVectorStoreAndPoll() {
+      telemetry.attachFileCalls += 1;
       return {
         id: "vsf_test_123",
         status: "completed",
         lastError: null,
       };
     },
-    async parseStructuredOutput({ schemaName }) {
+    async parseStructuredOutput({ schemaName, tools, include, timeoutMs, maxAttempts }) {
+      telemetry.parseCalls.push({
+        schemaName,
+        tools,
+        include,
+        timeoutMs,
+        maxAttempts,
+      });
+
       if (schemaName === "entity_resolution") {
         return {
           responseId: "resp_entity",
@@ -416,9 +445,21 @@ function createOpenAIStub(): OpenAIResearchClient {
 describe("createResearchPipelineService", () => {
   it("persists external sources, facts, and a research summary with known source IDs", async () => {
     const stub = createRepositoryStub();
+    const telemetry = {
+      parseCalls: [] as Array<{
+        schemaName: string;
+        tools?: Array<Record<string, unknown>>;
+        include?: Array<"web_search_call.action.sources" | "file_search_call.results">;
+        timeoutMs?: number;
+        maxAttempts?: number;
+      }>,
+      createVectorStoreCalls: 0,
+      uploadFileCalls: 0,
+      attachFileCalls: 0,
+    };
     const service = createResearchPipelineService({
       repository: stub.repository,
-      openAIClient: createOpenAIStub(),
+      openAIClient: createOpenAIStub(telemetry),
     });
 
     const enrichMessage = await service.enrichExternalSources(stub.context);
@@ -434,6 +475,49 @@ describe("createResearchPipelineService", () => {
     expect(stub.context.run.researchSummary?.companyIdentity.companyName).toBe("OpenAI");
     expect(stub.events.some((event) => event.eventType === "research.summary.completed")).toBe(true);
     expect(stub.artifacts).toHaveLength(1);
+    expect(telemetry.createVectorStoreCalls).toBe(1);
+    expect(telemetry.uploadFileCalls).toBe(0);
+    expect(telemetry.attachFileCalls).toBe(0);
+    expect(telemetry.parseCalls).toEqual([
+      {
+        schemaName: "entity_resolution",
+        tools: undefined,
+        include: undefined,
+        timeoutMs: 30_000,
+        maxAttempts: 1,
+      },
+      {
+        schemaName: "external_source_enrichment",
+        tools: [
+          {
+            type: "web_search",
+            search_context_size: "high",
+            user_location: {
+              type: "approximate",
+              country: "US",
+              timezone: "America/New_York",
+            },
+          },
+        ],
+        include: ["web_search_call.action.sources"],
+        timeoutMs: 120_000,
+        maxAttempts: 1,
+      },
+      {
+        schemaName: "fact_normalization",
+        tools: undefined,
+        include: undefined,
+        timeoutMs: 75_000,
+        maxAttempts: 1,
+      },
+      {
+        schemaName: "research_summary",
+        tools: undefined,
+        include: undefined,
+        timeoutMs: 75_000,
+        maxAttempts: 1,
+      },
+    ]);
   });
 
   it("skips research work cleanly when OpenAI is not configured", async () => {

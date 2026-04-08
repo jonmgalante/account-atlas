@@ -523,4 +523,51 @@ describe("createReportPipelineRunner", () => {
     expect(stub.artifacts.some((artifact) => artifact.artifactType === "pdf")).toBe(false);
     expect(stub.recentEvents.some((event) => event.eventType === "artifact.pdf.failed")).toBe(true);
   });
+
+  it("keeps the run in progress when a step fails but still has retry attempts remaining", async () => {
+    const stub = createRepositoryStub();
+    let enrichAttempts = 0;
+    const runner = createReportPipelineRunner({
+      repository: stub.repository,
+      crawler: stub.crawler,
+      researchService: {
+        ...stub.researchService,
+        async enrichExternalSources() {
+          enrichAttempts += 1;
+
+          if (enrichAttempts === 1) {
+            throw new Error("Transient upstream timeout");
+          }
+
+          return "External enrichment completed on retry.";
+        },
+      },
+      accountPlanService: stub.accountPlanService,
+      exportService: stub.exportService,
+    });
+
+    await expect(
+      runner.processReportRun({
+        runId: 11,
+        trigger: "inline",
+      }),
+    ).rejects.toThrow("Transient upstream timeout");
+
+    expect(stub.report.status).toBe("running");
+    expect(stub.run.status).toBe("fetching");
+    expect(stub.run.stepKey).toBe("enrich_external_sources");
+    expect(stub.run.statusMessage).toContain("will retry automatically");
+    expect(stub.run.pipelineState.steps.enrich_external_sources.status).toBe("retrying");
+    expect(stub.recentEvents.some((event) => event.eventType === "pipeline.step.retry_scheduled")).toBe(true);
+
+    await runner.processReportRun({
+      runId: 11,
+      trigger: "inline",
+    });
+
+    expect(stub.report.status).toBe("ready");
+    expect(stub.run.status).toBe("completed");
+    expect(stub.run.pipelineState.steps.enrich_external_sources.status).toBe("completed");
+    expect(enrichAttempts).toBe(2);
+  });
 });

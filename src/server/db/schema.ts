@@ -20,7 +20,7 @@ import { useCaseDepartmentValues } from "@/lib/types/account-plan";
 import type { ResearchSummary } from "@/lib/types/research";
 
 type StoredPipelineStepState = {
-  status: "pending" | "running" | "completed" | "failed";
+  status: "pending" | "running" | "retrying" | "completed" | "failed";
   attemptCount: number;
   startedAt: string | null;
   completedAt: string | null;

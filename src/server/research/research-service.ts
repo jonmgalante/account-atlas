@@ -38,6 +38,12 @@ type ResearchServiceDependencies = {
   openAIClient?: OpenAIResearchClient;
 };
 
+const ENTITY_RESOLUTION_TIMEOUT_MS = 30_000;
+const EXTERNAL_ENRICHMENT_TIMEOUT_MS = 120_000;
+const FACT_NORMALIZATION_TIMEOUT_MS = 75_000;
+const RESEARCH_SUMMARY_TIMEOUT_MS = 75_000;
+const RESEARCH_OPENAI_MAX_ATTEMPTS = 1;
+
 const WEB_SEARCH_TOOL = {
   type: "web_search",
   search_context_size: "high",
@@ -357,27 +363,21 @@ export function createResearchPipelineService(dependencies: ResearchServiceDepen
         return "Skipped external enrichment because OPENAI_API_KEY is not configured.";
       }
 
-      let sources = await repository.listSourcesByRunId(context.run.id);
-      const vectorStoreId = await vectorStoreManager.ensureRunVectorStore(context, sources);
+      const sources = await repository.listSourcesByRunId(context.run.id);
+      await vectorStoreManager.ensureRunVectorStore(context, sources, {
+        syncSources: false,
+      });
 
       const entityResolution = await openAIClient.parseStructuredOutput({
         model: OPENAI_EXTRACTION_MODEL,
         instructions:
-          "Resolve the company identity from the provided crawl sources. Use only evidence grounded in the source registry and file search results. Never invent a source ID.",
+          "Resolve the company identity from the provided crawl sources. Use only evidence grounded in the source registry. Never invent a source ID.",
         input: buildEntityResolutionPrompt(context, sources),
         schema: entityResolutionSchema,
         schemaName: "entity_resolution",
-        tools: vectorStoreId
-          ? [
-              {
-                type: "file_search",
-                vector_store_ids: [vectorStoreId],
-                max_num_results: 8,
-              },
-            ]
-          : undefined,
-        include: vectorStoreId ? ["file_search_call.results"] : undefined,
         maxOutputTokens: 1_500,
+        timeoutMs: ENTITY_RESOLUTION_TIMEOUT_MS,
+        maxAttempts: RESEARCH_OPENAI_MAX_ATTEMPTS,
       });
 
       await appendStructuredDebugEvent(repository, context, "research.entity_resolution.completed", entityResolution);
@@ -392,6 +392,8 @@ export function createResearchPipelineService(dependencies: ResearchServiceDepen
         tools: [WEB_SEARCH_TOOL],
         include: ["web_search_call.action.sources"],
         maxOutputTokens: 3_500,
+        timeoutMs: EXTERNAL_ENRICHMENT_TIMEOUT_MS,
+        maxAttempts: RESEARCH_OPENAI_MAX_ATTEMPTS,
       });
 
       await appendStructuredDebugEvent(repository, context, "research.external_enrichment.completed", enrichment);
@@ -443,18 +445,6 @@ export function createResearchPipelineService(dependencies: ResearchServiceDepen
         }
       }
 
-      sources = await repository.listSourcesByRunId(context.run.id);
-      await vectorStoreManager.ensureRunVectorStore(
-        {
-          ...context,
-          run: {
-            ...context.run,
-            vectorStoreId: vectorStoreId ?? context.run.vectorStoreId,
-          },
-        },
-        sources,
-      );
-
       return `Resolved ${entityResolution.parsed.companyName} and stored ${persistedExternalSources} external sources (${dedupedExternalSources} deduped).`;
     },
 
@@ -488,17 +478,9 @@ export function createResearchPipelineService(dependencies: ResearchServiceDepen
         input: buildFactNormalizationPrompt(context, sources),
         schema: factNormalizationSchema,
         schemaName: "fact_normalization",
-        tools: context.run.vectorStoreId
-          ? [
-              {
-                type: "file_search",
-                vector_store_ids: [context.run.vectorStoreId],
-                max_num_results: 12,
-              },
-            ]
-          : undefined,
-        include: context.run.vectorStoreId ? ["file_search_call.results"] : undefined,
         maxOutputTokens: 4_500,
+        timeoutMs: FACT_NORMALIZATION_TIMEOUT_MS,
+        maxAttempts: RESEARCH_OPENAI_MAX_ATTEMPTS,
       });
 
       const normalizedFacts = dedupeFacts(
@@ -555,17 +537,9 @@ export function createResearchPipelineService(dependencies: ResearchServiceDepen
         input: buildResearchSummaryPrompt(context, sources, facts),
         schema: researchSummarySchema,
         schemaName: "research_summary",
-        tools: context.run.vectorStoreId
-          ? [
-              {
-                type: "file_search",
-                vector_store_ids: [context.run.vectorStoreId],
-                max_num_results: 8,
-              },
-            ]
-          : undefined,
-        include: context.run.vectorStoreId ? ["file_search_call.results"] : undefined,
         maxOutputTokens: 4_500,
+        timeoutMs: RESEARCH_SUMMARY_TIMEOUT_MS,
+        maxAttempts: RESEARCH_OPENAI_MAX_ATTEMPTS,
       });
 
       const summary = summaryResponse.parsed;

@@ -30,7 +30,7 @@ export type PipelineStepKey =
   | "export_pdf"
   | "finalize_report";
 
-export type PipelineStepStatus = "pending" | "running" | "completed" | "failed";
+export type PipelineStepStatus = "pending" | "running" | "retrying" | "completed" | "failed";
 
 export type ReportSectionKey =
   | "company-brief"

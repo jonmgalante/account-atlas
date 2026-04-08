@@ -35,12 +35,20 @@ function formatRunStatusLabel(status: string) {
 }
 
 function getRunNarrative(currentRun: NonNullable<ReportStatusShell["currentRun"]>) {
+  const currentStepState = currentRun.stepKey
+    ? currentRun.progress.steps.find((step) => step.key === currentRun.stepKey)?.status
+    : null;
+
   switch (currentRun.status) {
     case "queued":
       return "The run has been created and is waiting for the research worker to pick up the next pipeline step.";
     case "fetching":
     case "extracting":
     case "synthesizing":
+      if (currentStepState === "retrying") {
+        return "The latest attempt hit a retryable issue. Account Atlas is keeping the run active and will retry this step automatically.";
+      }
+
       return currentRun.stepLabel
         ? `${currentRun.stepLabel} is currently running. Newly persisted sources, facts, and report sections will appear here as they are committed.`
         : "The report pipeline is actively collecting and synthesizing evidence.";
@@ -61,6 +69,7 @@ function getStepIcon(status: NonNullable<ReportStatusShell["currentRun"]>["progr
       return <CheckCircle2 className="h-4 w-4 text-emerald-600" />;
     case "failed":
       return <CircleAlert className="h-4 w-4 text-destructive" />;
+    case "retrying":
     case "running":
       return <LoaderCircle className="h-4 w-4 animate-spin text-primary" />;
     default:

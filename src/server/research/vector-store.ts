@@ -47,10 +47,18 @@ export function createRunVectorStoreManager(dependencies: VectorStoreDependencie
   const repository = dependencies.repository ?? drizzleReportRepository;
 
   return {
-    async ensureRunVectorStore(context: StoredRunContext, sources: PersistedSource[]) {
+    async ensureRunVectorStore(
+      context: StoredRunContext,
+      sources: PersistedSource[],
+      options: {
+        syncSources?: boolean;
+      } = {},
+    ) {
       if (!openAIClient.isConfigured()) {
         return null;
       }
+
+      const syncSources = options.syncSources ?? true;
 
       let vectorStoreId = context.run.vectorStoreId;
 
@@ -70,6 +78,10 @@ export function createRunVectorStoreManager(dependencies: VectorStoreDependencie
           runId: context.run.id,
           vectorStoreId,
         });
+      }
+
+      if (!syncSources) {
+        return vectorStoreId;
       }
 
       for (const source of sources) {
