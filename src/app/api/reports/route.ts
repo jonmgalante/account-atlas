@@ -1,5 +1,6 @@
 import { parseReportRequest } from "@/lib/validation/report-request";
 import { isDatabaseConfigError } from "@/server/db/client";
+import { getDatabaseErrorDiagnostics } from "@/server/db/error-diagnostics";
 import { apiError, apiSuccess } from "@/server/http/api-response";
 import { logServerEvent } from "@/server/observability/logger";
 import { isReportCreatePolicyError } from "@/server/reporting/report-create-policy";
@@ -70,6 +71,7 @@ export async function POST(request: Request) {
     logServerEvent("error", "api.report.create.failed", {
       requesterHash,
       error,
+      databaseError: getDatabaseErrorDiagnostics(error),
     });
 
     return apiError({

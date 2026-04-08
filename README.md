@@ -34,6 +34,7 @@ cp .env.example .env.local
 4. Generate or apply migrations.
 
 ```bash
+pnpm db:doctor
 pnpm db:generate
 pnpm db:migrate
 ```
@@ -113,6 +114,8 @@ See [.env.example](/Users/jongalante/Desktop/account-atlas/.env.example) for the
 
 - Schema lives in [src/server/db/schema.ts](/Users/jongalante/Desktop/account-atlas/src/server/db/schema.ts).
 - Generated SQL migrations live in [drizzle](/Users/jongalante/Desktop/account-atlas/drizzle).
+- CLI database commands read `DATABASE_URL` from the shell first, then `.env`, then `.env.local`.
+- Use `pnpm db:doctor` to confirm the target database, key tables, and Drizzle migration state without printing secrets.
 - Regenerate migration files after schema edits:
 
 ```bash
