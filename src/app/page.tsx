@@ -17,11 +17,11 @@ const proofBlocks = [
   },
   {
     title: "A usable account brief",
-    description: "Get top use cases, buyer hypotheses, motion recommendation, and pilot plan.",
+    description: "Get prioritized use cases, motion recommendation, stakeholder hypotheses, and a pilot plan.",
   },
   {
-    title: "Trust built in",
-    description: "Citations, confidence, completeness, and thin-evidence warnings stay visible.",
+    title: "Shareable from the start",
+    description: "Review online, revisit later, and share a single brief link.",
   },
 ];
 
@@ -32,7 +32,7 @@ const sampleOutputItems = [
   },
   {
     title: "Top use cases",
-    description: "Twelve to fifteen use cases generated across functions, with the top three prioritized for action.",
+    description: "Prioritized workflows across functions, with the strongest starting points surfaced first.",
   },
   {
     title: "Stakeholder map",
@@ -46,40 +46,20 @@ const sampleOutputItems = [
 
 const workflowSteps = [
   {
-    title: "Submit the company website",
-    description: "We resolve the business entity and start the research run.",
+    title: "Submit company website",
   },
   {
     title: "Build the evidence base",
-    description: "We gather official pages, public documents, investor materials when available, and supporting external signals.",
   },
   {
-    title: "Review the account brief",
-    description: "You get prioritized AI use cases, a motion recommendation, stakeholder hypotheses, and a 90-day pilot plan.",
+    title: "Review account brief",
   },
 ];
 
 const trustPoints = [
   "Facts, inferences, and hypotheses are labeled",
-  "Major sections show confidence and research completeness",
-  "Thin-evidence warnings appear when public signals are weak",
+  "Confidence, completeness, and thin-evidence warnings stay visible",
   "Major recommendations link back to sources",
-  "The goal is to identify the most credible place to start, not promise certainty",
-];
-
-const audienceCards = [
-  {
-    title: "Account owners",
-    description: "Get a credible first-pass account strategy before discovery starts.",
-  },
-  {
-    title: "Solutions teams",
-    description: "Spot feasible workflows, dependencies, and pilot paths early.",
-  },
-  {
-    title: "Revenue leaders",
-    description: "Standardize account planning with shareable, source-backed briefs.",
-  },
 ];
 
 export default function HomePage() {
@@ -100,9 +80,6 @@ export default function HomePage() {
                   Account Atlas researches a company, builds a cited fact base, prioritizes likely AI use cases,
                   recommends the right motion, and outlines a 90-day pilot plan - with confidence and uncertainty made
                   visible.
-                </p>
-                <p className="text-sm leading-6 text-foreground/75">
-                  Facts, inferences, and hypotheses are clearly labeled.
                 </p>
               </div>
               <div className="flex flex-wrap gap-3">
@@ -138,19 +115,21 @@ export default function HomePage() {
           <Card className="border-border/80 bg-card/78 shadow-panel">
             <CardHeader className="space-y-4">
               <SectionHeading
-                eyebrow="SAMPLE OUTPUT"
-                title="What the report actually gives your team"
-                description="Not a generic company summary - an evidence-backed AI account strategy you can use in planning, discovery, and pilot design."
+                eyebrow="INSIDE THE ACCOUNT BRIEF"
+                title="What the account brief gives your team"
+                description="A source-backed first-pass AI account strategy for planning, discovery, and pilot design."
               />
             </CardHeader>
             <CardContent>
-              <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+              <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
                 {sampleOutputItems.map((item) => (
                   <Card key={item.title} className="border-border/70 bg-background/72 shadow-none">
-                    <CardHeader className="space-y-3 pb-3">
-                      <CardTitle className="text-xl leading-snug">{item.title}</CardTitle>
+                    <CardHeader className="space-y-2 p-5 pb-2">
+                      <CardTitle className="text-lg leading-snug">{item.title}</CardTitle>
                     </CardHeader>
-                    <CardContent className="text-sm leading-6 text-foreground/75">{item.description}</CardContent>
+                    <CardContent className="px-5 pb-5 pt-0 text-sm leading-6 text-foreground/75">
+                      {item.description}
+                    </CardContent>
                   </Card>
                 ))}
               </div>
@@ -161,15 +140,16 @@ export default function HomePage() {
         </Container>
       </SectionFrame>
 
-      <SectionFrame id="how-it-works" className="pb-16">
+      <SectionFrame id="how-it-works" className="pb-14">
         <Container>
           <Card className="border-border/80 bg-card/76 shadow-panel">
             <CardHeader className="space-y-4">
-              <SectionHeading
-                eyebrow="HOW IT WORKS"
-                title="From company website to first-motion plan"
-                description="The workflow stays compact: resolve the company, gather public evidence, and return a first-pass AI account brief."
-              />
+              <div className="space-y-3">
+                <p className="text-xs font-medium uppercase tracking-[0.24em] text-muted-foreground">HOW IT WORKS</p>
+                <h2 className="text-balance text-3xl leading-tight text-primary sm:text-4xl">
+                  From company website to first motion
+                </h2>
+              </div>
             </CardHeader>
             <CardContent>
               <div className="grid gap-3 md:grid-cols-3">
@@ -179,7 +159,6 @@ export default function HomePage() {
                       Step {index + 1}
                     </div>
                     <div className="mt-2 font-medium text-foreground">{step.title}</div>
-                    <p className="mt-2 text-sm leading-6 text-foreground/75">{step.description}</p>
                   </div>
                 ))}
               </div>
@@ -188,8 +167,8 @@ export default function HomePage() {
         </Container>
       </SectionFrame>
 
-      <SectionFrame className="pb-16">
-        <Container className="grid gap-6 lg:grid-cols-[1.05fr_0.95fr]">
+      <SectionFrame className="pb-14">
+        <Container>
           <Card className="border-border/80 bg-card/74 shadow-panel">
             <CardHeader className="space-y-4">
               <SectionHeading
@@ -198,7 +177,7 @@ export default function HomePage() {
                 description="The brief keeps uncertainty visible so teams can judge where to start and what still needs validation."
               />
             </CardHeader>
-            <CardContent className="grid gap-3">
+            <CardContent className="grid gap-3 md:grid-cols-3">
               {trustPoints.map((point) => (
                 <div
                   key={point}
@@ -209,38 +188,19 @@ export default function HomePage() {
               ))}
             </CardContent>
           </Card>
-
-          <Card className="border-border/80 bg-card/74 shadow-panel">
-            <CardHeader className="space-y-4">
-              <SectionHeading
-                eyebrow="WHO IT'S FOR"
-                title="Built for account owners, AEs, SEs, and solutions teams"
-                description="Use it to prepare for discovery, shape solution paths, and align around the most credible first motion."
-              />
-            </CardHeader>
-            <CardContent className="grid gap-3">
-              {audienceCards.map((item) => (
-                <div key={item.title} className="rounded-[1.5rem] border border-border/70 bg-background/76 p-4">
-                  <div className="font-medium text-foreground">{item.title}</div>
-                  <p className="mt-2 text-sm leading-6 text-foreground/75">{item.description}</p>
-                </div>
-              ))}
-            </CardContent>
-          </Card>
         </Container>
       </SectionFrame>
 
-      <SectionFrame className="pb-20">
+      <SectionFrame className="pb-16">
         <Container>
           <Card className="border-border/80 bg-card/80 shadow-panel">
-            <CardContent className="flex flex-col gap-6 p-6 sm:p-8 lg:flex-row lg:items-end lg:justify-between">
-              <div className="max-w-3xl space-y-3">
+            <CardContent className="flex flex-col gap-5 p-6 sm:p-8 lg:flex-row lg:items-end lg:justify-between">
+              <div className="max-w-3xl space-y-2">
                 <h2 className="text-balance text-3xl leading-tight text-primary sm:text-4xl">
-                  Start with a company URL. Leave with an AI account strategy.
+                  Generate a shareable, source-backed account brief.
                 </h2>
-                <p className="text-base leading-7 text-foreground/75">
-                  Generate a shareable brief with prioritized use cases, motion recommendation, stakeholder
-                  hypotheses, citations, and a 90-day pilot plan.
+                <p className="text-sm leading-6 text-foreground/70">
+                  Built for account owners, AEs, SEs, and solutions teams.
                 </p>
               </div>
               <div className="flex flex-wrap gap-3">

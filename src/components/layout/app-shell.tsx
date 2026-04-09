@@ -32,7 +32,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               </Link>
             </nav>
             <Button asChild size="sm">
-              <Link href="/#generate-report">Generate report</Link>
+              <Link href="/#generate-report">Generate account brief</Link>
             </Button>
           </div>
         </Container>

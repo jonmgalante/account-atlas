@@ -146,17 +146,17 @@ export function ReportUrlForm() {
           </p>
         </form>
 
-        <div className="rounded-[1.5rem] bg-background/70 p-4 text-sm leading-6 text-foreground/70">
-          <div className="flex items-center gap-2 font-medium text-foreground">
+        <details className="rounded-[1.25rem] bg-background/55 px-4 py-3 text-sm leading-6 text-foreground/70">
+          <summary className="flex cursor-pointer list-none items-center gap-2 font-medium text-foreground [&::-webkit-details-marker]:hidden">
             <ShieldAlert className="h-4 w-4 text-primary" />
             URL requirements
-          </div>
+          </summary>
           <ul className="mt-3 space-y-2">
             <li>Only publicly accessible `http` and `https` URLs are accepted.</li>
             <li>`localhost`, raw IP hosts, custom ports, and private-network targets are blocked.</li>
             <li>Recent in-flight or completed reports for the same company may be reused.</li>
           </ul>
-        </div>
+        </details>
       </CardContent>
     </Card>
   );
