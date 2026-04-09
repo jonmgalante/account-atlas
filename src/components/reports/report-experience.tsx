@@ -13,7 +13,6 @@ import {
   LoaderCircle,
   RefreshCcw,
   ShieldAlert,
-  Sparkles,
   Target,
 } from "lucide-react";
 
@@ -32,6 +31,7 @@ import type { ApiResponse } from "@/lib/types/api";
 import type {
   ReportDocument,
   ReportFactRecord,
+  ReportSectionKey,
   ReportStatusShell,
 } from "@/lib/types/report";
 import { cn } from "@/lib/utils";
@@ -50,6 +50,44 @@ const reportAnchorItems = [
   { id: "pilot-plan", label: "Pilot Plan" },
   { id: "expansion-scenarios", label: "Expansion Scenarios" },
   { id: "sources", label: "Sources" },
+] as const;
+
+const compactSectionGroups: ReadonlyArray<{
+  id: (typeof reportAnchorItems)[number]["id"];
+  label: string;
+  keys: readonly ReportSectionKey[];
+  pendingDescription: string;
+}> = [
+  {
+    id: "research",
+    label: "Research",
+    keys: ["company-brief", "fact-base", "ai-maturity-signals"],
+    pendingDescription: "Public-web signals and fact base appear here as soon as evidence is ready.",
+  },
+  {
+    id: "use-cases",
+    label: "Use Cases",
+    keys: ["prioritized-use-cases", "recommended-motion"],
+    pendingDescription: "Ranked opportunities and motion fit will appear here once planning has enough evidence.",
+  },
+  {
+    id: "stakeholders",
+    label: "Stakeholders",
+    keys: ["stakeholder-hypotheses", "objections", "discovery-questions"],
+    pendingDescription: "Likely sponsors, objections, and discovery paths appear here once planning is ready.",
+  },
+  {
+    id: "pilot-plan",
+    label: "Pilot Plan",
+    keys: ["pilot-plan"],
+    pendingDescription: "The pilot structure appears here once the top opportunity and motion are ready.",
+  },
+  {
+    id: "expansion-scenarios",
+    label: "Expansion Scenarios",
+    keys: ["expansion-scenarios"],
+    pendingDescription: "Scenario planning appears here after the brief has enough evidence to frame adoption paths.",
+  },
 ] as const;
 
 function formatMotionLabel(motion: string) {
@@ -100,17 +138,74 @@ function confidenceTone(confidence: number | null) {
   return "text-destructive";
 }
 
+function formatReportStatusLabel(status: string) {
+  switch (status) {
+    case "queued":
+      return "Queued";
+    case "running":
+      return "Building report";
+    case "ready":
+      return "Ready";
+    case "failed":
+      return "Failed";
+    default:
+      return status.replaceAll("_", " ");
+  }
+}
+
+function getHeroSummary({
+  isBuildingReport,
+  hasReadySections,
+  currentRunStatus,
+}: {
+  isBuildingReport: boolean;
+  hasReadySections: boolean;
+  currentRunStatus: string | null;
+}) {
+  if (isBuildingReport) {
+    return "Built from public-web evidence for account teams. This brief is still building, and completed sections appear as soon as they are ready.";
+  }
+
+  if (currentRunStatus === "failed" && !hasReadySections) {
+    return "Built from public-web evidence for account teams. This run ended before a full brief was ready.";
+  }
+
+  return "Built from public-web evidence for account teams, with sources, confidence, and uncertainty kept visible.";
+}
+
+function normalizeVisibleCopy(text: string) {
+  return text
+    .replaceAll("account-plan", "AI account brief")
+    .replaceAll("account plan", "AI account brief")
+    .replaceAll("Account plan", "AI account brief")
+    .replaceAll("public report", "shareable report")
+    .replaceAll("public web", "public-web")
+    .replaceAll("Research completeness", "Evidence coverage")
+    .replaceAll("report pipeline", "report build");
+}
+
 function EmptySection({
   title,
   description,
+  compact = false,
 }: {
   title: string;
   description: string;
+  compact?: boolean;
 }) {
   return (
-    <Card className="border-dashed border-border/80 bg-gradient-to-br from-muted/90 via-muted/70 to-card/70 shadow-none">
-      <CardContent className="p-6 text-sm leading-7 text-muted-foreground">
-        <div className="text-[11px] font-medium uppercase tracking-[0.22em] text-muted-foreground">Awaiting evidence</div>
+    <Card
+      className={cn(
+        "border-dashed shadow-none",
+        compact
+          ? "border-border/60 bg-background/70"
+          : "border-border/80 bg-gradient-to-br from-muted/90 via-muted/70 to-card/70",
+      )}
+    >
+      <CardContent className={cn("text-sm leading-7 text-foreground/70", compact ? "p-5" : "p-6")}>
+        <div className="text-[11px] font-medium uppercase tracking-[0.22em] text-muted-foreground">
+          {compact ? "Section status" : "Awaiting evidence"}
+        </div>
         <div className="mt-2 font-medium text-foreground">{title}</div>
         <p className="mt-2">{description}</p>
       </CardContent>
@@ -138,7 +233,7 @@ function ReportSection({
         <p className="text-xs font-medium uppercase tracking-[0.24em] text-muted-foreground">{eyebrow}</p>
         <div className="space-y-2">
           <h2 className="text-3xl leading-tight text-primary sm:text-4xl">{title}</h2>
-          <p className="max-w-3xl text-base leading-7 text-muted-foreground">{description}</p>
+          <p className="max-w-3xl text-base leading-7 text-foreground/70">{description}</p>
         </div>
       </div>
       {children}
@@ -234,25 +329,6 @@ export function ReportExperience({
     status?.report.updatedAt,
   ]);
 
-  useEffect(() => {
-    if (selectedSourceIds.length > 0) {
-      return;
-    }
-
-    const defaultSourceIds =
-      document.currentRun?.accountPlan?.topUseCases[0]?.evidenceSourceIds ??
-      document.currentRun?.researchSummary?.sourceIds.slice(0, 2) ??
-      [];
-
-    if (defaultSourceIds.length > 0) {
-      setSelectedSourceIds(defaultSourceIds);
-    }
-  }, [
-    document.currentRun?.accountPlan?.topUseCases,
-    document.currentRun?.researchSummary?.sourceIds,
-    selectedSourceIds.length,
-  ]);
-
   const currentRun = document.currentRun;
   const researchSummary = currentRun?.researchSummary ?? null;
   const accountPlan = currentRun?.accountPlan ?? null;
@@ -267,6 +343,65 @@ export function ReportExperience({
   const motionRecommendation = accountPlan
     ? formatMotionLabel(accountPlan.overallAccountMotion.recommendedMotion)
     : "Pending";
+  const companyDisplayName =
+    document.report.companyName ?? researchSummary?.companyIdentity.companyName ?? document.report.canonicalDomain;
+  const primaryStatusLabel = formatReportStatusLabel(liveReportStatus);
+  const isBuildingReport = liveReportStatus === "queued" || liveReportStatus === "running";
+  const hasResearchContent = Boolean(researchSummary || document.facts.length > 0);
+  const hasPlanningContent = Boolean(accountPlan);
+  const hasSourcesContent = document.sources.length > 0;
+  const showResearchSection = !isBuildingReport || hasResearchContent;
+  const showUseCasesSection = !isBuildingReport || hasPlanningContent;
+  const showStakeholdersSection = !isBuildingReport || hasPlanningContent;
+  const showPilotPlanSection = !isBuildingReport || hasPlanningContent;
+  const showExpansionSection = !isBuildingReport || hasPlanningContent;
+  const showSourcesSection = !isBuildingReport || hasSourcesContent;
+  const sectionStatusByKey = new Map(document.sections.map((section) => [section.key, section.status]));
+  const pendingSectionTargets = compactSectionGroups
+    .map((section) => {
+      const readyCount = section.keys.filter((key) => sectionStatusByKey.get(key) === "ready").length;
+      const isVisible =
+        section.id === "research"
+          ? showResearchSection
+          : section.id === "use-cases"
+            ? showUseCasesSection
+            : section.id === "stakeholders"
+              ? showStakeholdersSection
+              : section.id === "pilot-plan"
+                ? showPilotPlanSection
+                : showExpansionSection;
+
+      return {
+        ...section,
+        readyCount,
+        totalCount: section.keys.length,
+        isVisible,
+      };
+    })
+    .filter((section) => !section.isVisible);
+  const pendingSourceTarget =
+    isBuildingReport && !showSourcesSection
+      ? {
+          id: "sources" as const,
+          label: "Sources",
+          readyCount: 0,
+          totalCount: 1,
+          pendingDescription: "Cited sources appear here as evidence is collected.",
+        }
+      : null;
+  const showCompactPendingSections =
+    isBuildingReport && (pendingSectionTargets.length > 0 || Boolean(pendingSourceTarget));
+  const heroSummary = getHeroSummary({
+    isBuildingReport,
+    hasReadySections: readySectionCount > 0,
+    currentRunStatus: currentRun?.status ?? null,
+  });
+  const lastUpdatedAt =
+    status?.currentRun?.updatedAt ??
+    status?.report.updatedAt ??
+    document.currentRun?.updatedAt ??
+    document.report.updatedAt;
+  const showDesktopSourceRail = hasSourcesContent || selectedSourceIds.length > 0;
   const retryHref = `/?url=${encodeURIComponent(document.report.normalizedInputUrl)}`;
 
   const handleSelectSources = (sourceIds: number[]) => {
@@ -275,8 +410,17 @@ export function ReportExperience({
   };
 
   return (
-    <SectionFrame className="py-10 sm:py-14">
-      <Container className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_23rem]">
+    <SectionFrame className="overflow-hidden py-10 sm:py-14">
+      <div
+        aria-hidden="true"
+        className="pointer-events-none absolute inset-0 bg-gradient-to-b from-background/60 via-background/35 to-background/60"
+      />
+      <Container
+        className={cn(
+          "relative grid gap-6",
+          showDesktopSourceRail ? "xl:grid-cols-[minmax(0,1fr)_23rem]" : "xl:grid-cols-[minmax(0,1fr)]",
+        )}
+      >
         <div className="space-y-7">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <Link
@@ -284,7 +428,7 @@ export function ReportExperience({
               className="inline-flex items-center gap-2 rounded-full border border-border/70 bg-card/82 px-4 py-2 text-sm text-foreground transition hover:border-primary/30 hover:text-primary"
             >
               <ArrowLeft className="h-4 w-4" />
-              Back to submit
+              New report
             </Link>
             <div className="flex flex-wrap items-center gap-2">
               {isRefreshingDocument ? (
@@ -293,54 +437,39 @@ export function ReportExperience({
                   Refreshing report
                 </Badge>
               ) : null}
-              <Badge className="rounded-full px-4 py-1.5 capitalize" variant="secondary">
-                {document.result.label}
+              <Badge className="rounded-full px-4 py-1.5" variant="secondary">
+                {primaryStatusLabel}
               </Badge>
               {document.result.hasThinEvidence ? (
                 <Badge className="rounded-full px-4 py-1.5" variant="outline">
                   Thin evidence
                 </Badge>
               ) : null}
-              <Badge className="rounded-full px-4 py-1.5 capitalize" variant="outline">
-                {liveReportStatus.replaceAll("-", " ")}
-              </Badge>
             </div>
           </div>
 
-          <Card className="overflow-hidden border-strong/80 bg-card/88 shadow-panel">
+          <Card className="overflow-hidden border-border/70 bg-card/88 shadow-panel">
             <CardHeader className="space-y-6">
               <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_18rem]">
                 <div className="space-y-4">
                   <div className="flex flex-wrap items-center gap-2">
                     <Badge variant="secondary" className="rounded-full px-4 py-1 text-xs uppercase tracking-[0.22em]">
-                      Public report
+                      Shareable report
                     </Badge>
-                    {currentRun ? (
-                      <Badge className="rounded-full px-4 py-1 text-xs uppercase tracking-[0.22em]" variant="outline">
-                        Run {currentRun.status.replaceAll("_", " ")}
-                      </Badge>
-                    ) : null}
                   </div>
                   <div className="space-y-3">
                     <h1 className="text-balance text-4xl leading-tight text-primary sm:text-5xl">
-                      {document.report.companyName
-                        ? `${document.report.companyName} account plan`
-                        : `${document.report.canonicalDomain} account plan`}
+                      {companyDisplayName}
                     </h1>
-                    <p className="max-w-3xl text-base leading-7 text-muted-foreground sm:text-[1.05rem]">
-                      {document.result.state === "partial"
-                        ? document.result.summary
-                        : accountPlan
-                        ? `The current run produced ${accountPlan.candidateUseCases.length} candidate use cases, a ${formatMotionLabel(accountPlan.overallAccountMotion.recommendedMotion)} account motion recommendation, and source-backed discovery guidance.`
-                        : currentRun?.status === "failed"
-                          ? "The latest run failed before the full account plan was generated. Any visible evidence below reflects only the portions that completed."
-                          : "This run is still gathering and synthesizing public evidence. Completed sections appear here as soon as they are persisted."}
+                    <p className="text-base font-medium text-foreground/70 sm:text-lg">AI account brief</p>
+                    <p className="max-w-3xl text-base leading-7 text-foreground/70 sm:text-[1.05rem]">
+                      {heroSummary}
                     </p>
                   </div>
                 </div>
-                <div className="rounded-[1.75rem] border border-border/70 bg-background/80 px-5 py-4 text-sm text-muted-foreground">
+                <div className="rounded-[1.75rem] border border-border/60 bg-background/80 px-5 py-4 text-sm text-foreground/70">
                   <div className="text-[11px] font-medium uppercase tracking-[0.22em] text-muted-foreground">
-                    Report metadata
+                    Report details
                   </div>
                   <div className="mt-3 space-y-3">
                     <div>
@@ -348,33 +477,37 @@ export function ReportExperience({
                       <div className="mt-1 font-mono text-xs">{document.report.shareId}</div>
                     </div>
                     <div>
-                      <div className="font-medium text-foreground">Target</div>
+                      <div className="font-medium text-foreground">Submitted URL</div>
                       <div className="mt-1 break-all text-xs">{document.report.normalizedInputUrl}</div>
                     </div>
                     <div>
-                      <div className="font-medium text-foreground">Created</div>
-                      <div className="mt-1 text-xs">{formatDateTime(document.report.createdAt)}</div>
+                      <div className="font-medium text-foreground">Domain</div>
+                      <div className="mt-1 text-xs">{document.report.canonicalDomain}</div>
+                    </div>
+                    <div>
+                      <div className="font-medium text-foreground">Last updated</div>
+                      <div className="mt-1 text-xs">{formatDateTime(lastUpdatedAt)}</div>
                     </div>
                   </div>
                 </div>
               </div>
 
               <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-                <div className="rounded-[1.5rem] border border-border/70 bg-background/80 p-4">
+                <div className="rounded-[1.5rem] border border-border/60 bg-background/75 p-4">
                   <div className="text-[11px] font-medium uppercase tracking-[0.22em] text-muted-foreground">
                     Recommended motion
                   </div>
                   <div className="mt-2 font-medium text-foreground">{motionRecommendation}</div>
                 </div>
-                <div className="rounded-[1.5rem] border border-border/70 bg-background/80 p-4">
+                <div className="rounded-[1.5rem] border border-border/60 bg-background/75 p-4">
                   <div className="text-[11px] font-medium uppercase tracking-[0.22em] text-muted-foreground">
-                    Research completeness
+                    Evidence coverage
                   </div>
                   <div className="mt-2 font-medium text-foreground">
                     {researchCompleteness !== null ? `${researchCompleteness}/100` : "Pending"}
                   </div>
                 </div>
-                <div className="rounded-[1.5rem] border border-border/70 bg-background/80 p-4">
+                <div className="rounded-[1.5rem] border border-border/60 bg-background/75 p-4">
                   <div className="text-[11px] font-medium uppercase tracking-[0.22em] text-muted-foreground">
                     Sections ready
                   </div>
@@ -382,23 +515,22 @@ export function ReportExperience({
                     {readySectionCount} of {document.sections.length}
                   </div>
                 </div>
-                <div className="rounded-[1.5rem] border border-border/70 bg-background/80 p-4">
+                <div className="rounded-[1.5rem] border border-border/60 bg-background/75 p-4">
                   <div className="text-[11px] font-medium uppercase tracking-[0.22em] text-muted-foreground">
-                    Sources in registry
+                    Cited sources
                   </div>
                   <div className="mt-2 font-medium text-foreground">{document.sources.length}</div>
                 </div>
               </div>
 
-              <div className="flex flex-col gap-4 rounded-[1.75rem] border border-border/70 bg-gradient-to-br from-muted/85 via-card to-secondary/60 p-5">
+              <div className="flex flex-col gap-4 rounded-[1.75rem] border border-border/60 bg-gradient-to-br from-muted/80 via-card to-secondary/50 p-5">
                 <div className="flex flex-wrap items-start justify-between gap-4">
                   <div className="space-y-2">
                     <div className="text-[11px] font-medium uppercase tracking-[0.22em] text-muted-foreground">
-                      Export artifacts
+                      Exports
                     </div>
-                    <p className="max-w-2xl text-sm leading-7 text-muted-foreground">
-                      Markdown and PDF exports are generated from the persisted report model so they stay aligned with
-                      the public web view and source registry.
+                    <p className="max-w-2xl text-sm leading-7 text-foreground/70">
+                      Markdown and PDF exports stay aligned with this shareable report and its cited sources.
                     </p>
                   </div>
                   <div className="flex flex-wrap gap-2">
@@ -431,21 +563,21 @@ export function ReportExperience({
                   </div>
                 </div>
 
-                <div className="flex flex-wrap gap-3 text-sm text-muted-foreground">
+                <div className="flex flex-wrap gap-3 text-sm text-foreground/70">
                   <a
                     href={document.report.normalizedInputUrl}
                     target="_blank"
                     rel="noreferrer"
-                    className="inline-flex items-center gap-2 rounded-full border border-border/70 bg-card/80 px-4 py-2 transition hover:border-primary/30 hover:text-primary"
+                    className="inline-flex items-center gap-2 rounded-full border border-border/60 bg-card/80 px-4 py-2 transition hover:border-primary/30 hover:text-primary"
                   >
                     <Link2 className="h-4 w-4 text-primary" />
                     {document.report.normalizedInputUrl}
                   </a>
-                  <div className="inline-flex items-center gap-2 rounded-full border border-border/70 bg-card/80 px-4 py-2">
-                    <Sparkles className="h-4 w-4 text-primary" />
-                    Created {formatDateTime(document.report.createdAt)}
+                  <div className="inline-flex items-center gap-2 rounded-full border border-border/60 bg-card/80 px-4 py-2">
+                    <RefreshCcw className="h-4 w-4 text-primary" />
+                    Last updated {formatDateTime(lastUpdatedAt)}
                   </div>
-                  <div className="inline-flex items-center gap-2 rounded-full border border-border/70 bg-card/80 px-4 py-2">
+                  <div className="inline-flex items-center gap-2 rounded-full border border-border/60 bg-card/80 px-4 py-2">
                     <LayoutList className="h-4 w-4 text-primary" />
                     {readySectionCount} of {document.sections.length} sections ready
                   </div>
@@ -453,8 +585,8 @@ export function ReportExperience({
               </div>
 
               {currentRun?.status === "completed" && downloadableMarkdownArtifact && !downloadablePdfArtifact ? (
-                <p className="text-sm leading-7 text-muted-foreground">
-                  PDF export is unavailable for this run. The Markdown export and cited web report remain available.
+                <p className="text-sm leading-7 text-foreground/70">
+                  PDF export is unavailable for this run. The Markdown export and shareable report remain available.
                 </p>
               ) : null}
             </CardHeader>
@@ -462,7 +594,7 @@ export function ReportExperience({
 
           <nav
             aria-label="Report sections"
-            className="sticky top-[5rem] z-20 overflow-x-auto rounded-[1.75rem] border border-strong/80 bg-panel/88 px-3 py-3 shadow-panel backdrop-blur-xl"
+            className="sticky top-[5rem] z-20 overflow-x-auto rounded-[1.75rem] border border-border/70 bg-panel/88 px-3 py-3 shadow-panel backdrop-blur-xl"
           >
             <div className="flex min-w-max items-center justify-between gap-3">
               <div className="hidden items-center gap-3 pl-2 sm:flex">
@@ -480,21 +612,21 @@ export function ReportExperience({
                     {item.label}
                   </a>
                 ))}
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  className="xl:hidden"
-                  onClick={() => setIsMobileSourcePanelOpen(true)}
-                >
-                  <BookOpenText className="h-4 w-4" />
-                  Sources
-                </Button>
+                {showDesktopSourceRail ? (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="xl:hidden"
+                    onClick={() => setIsMobileSourcePanelOpen(true)}
+                  >
+                    <BookOpenText className="h-4 w-4" />
+                    Sources
+                  </Button>
+                ) : null}
               </div>
             </div>
           </nav>
-
-          <ReportStatusPanel status={status} isPolling={isPolling} errorMessage={errorMessage} />
 
           {currentRun?.status === "failed" ? (
             <Card className="border-destructive/20 bg-destructive/5 shadow-panel">
@@ -502,10 +634,10 @@ export function ReportExperience({
                 <div className="space-y-2">
                   <div className="flex items-center gap-2 font-medium text-destructive">
                     <AlertCircle className="h-4 w-4" />
-                    Report generation failed
+                    Report build failed
                   </div>
                   <p className="max-w-2xl text-sm leading-7 text-destructive">
-                    {currentRun.errorMessage ?? currentRun.statusMessage}
+                    {normalizeVisibleCopy(currentRun.errorMessage ?? currentRun.statusMessage)}
                   </p>
                 </div>
                 <div className="flex flex-wrap gap-2">
@@ -529,8 +661,8 @@ export function ReportExperience({
           <ReportSection
             id="overview"
             eyebrow="Overview"
-            title="Account posture"
-            description="A grounded summary of what the current evidence supports, where confidence is thinner, and how the overall motion recommendation should be interpreted."
+            title="Executive summary"
+            description="A grounded summary for account owners, AEs, SEs, and solutions teams, with confidence gaps and uncertainty kept explicit."
           >
             <div className="grid gap-4 lg:grid-cols-[1.15fr_0.85fr]">
               <Card className="border-strong/70 bg-card/80 shadow-panel">
@@ -543,17 +675,17 @@ export function ReportExperience({
                 <CardContent className="space-y-4">
                   <div className="flex flex-wrap items-center gap-3">
                     <Badge className="rounded-full px-4 py-1.5 uppercase" variant="secondary">
-                      {accountPlan ? formatMotionLabel(accountPlan.overallAccountMotion.recommendedMotion) : "Pending"}
+                    {accountPlan ? formatMotionLabel(accountPlan.overallAccountMotion.recommendedMotion) : "Pending"}
                     </Badge>
                     {researchSummary ? (
                       <span className={cn("text-sm font-medium", confidenceTone(researchSummary.researchCompletenessScore))}>
-                        Completeness {researchSummary.researchCompletenessScore}/100
+                        Evidence coverage {researchSummary.researchCompletenessScore}/100
                       </span>
                     ) : null}
                   </div>
                   <p className="text-sm leading-7 text-muted-foreground">
                     {accountPlan?.overallAccountMotion.rationale ??
-                      "The motion recommendation will appear once the planning stage has enough evidence to choose between workspace, API platform, or hybrid."}
+                      "The motion recommendation will appear once the brief has enough evidence to choose between workspace, API platform, or hybrid."}
                   </p>
                   {accountPlan ? (
                     <EvidencePills
@@ -616,9 +748,9 @@ export function ReportExperience({
                     <CardContent className="space-y-3 p-5 text-sm leading-7">
                       <div className="flex items-center gap-2 font-medium text-foreground">
                         <ShieldAlert className="h-4 w-4 text-primary" />
-                        {warning.title}
+                        {normalizeVisibleCopy(warning.title)}
                       </div>
-                      <p className="text-muted-foreground">{warning.message}</p>
+                      <p className="text-muted-foreground">{normalizeVisibleCopy(warning.message)}</p>
                       {warning.sourceIds.length > 0 ? (
                         <EvidencePills
                           sourceIds={warning.sourceIds}
@@ -632,47 +764,139 @@ export function ReportExperience({
               </div>
             ) : null}
 
-            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-              {document.sectionAssessments.map((section) => (
-                <Card key={section.key} className="border-strong/70 bg-card/75 shadow-none">
-                  <CardContent className="space-y-3 p-5">
-                    <div className="flex items-start justify-between gap-3">
-                      <div>
-                        <div className="font-medium text-foreground">{section.label}</div>
-                        <div className="mt-1 text-xs uppercase tracking-[0.2em] text-muted-foreground">
-                          {section.completenessLabel}
-                        </div>
-                      </div>
-                      <Badge className="rounded-full px-3 py-1" variant={section.status === "ready" ? "secondary" : "outline"}>
-                        {section.confidence !== null ? `${section.confidence}/100` : "Pending"}
-                      </Badge>
+            {showCompactPendingSections ? (
+              pendingSectionTargets.length > 0 || pendingSourceTarget ? (
+                <div className="space-y-3">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div className="text-sm font-medium text-foreground">Sections in progress</div>
+                    <div className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
+                      {pendingSectionTargets.length + (pendingSourceTarget ? 1 : 0)} pending
                     </div>
-                    <p className="text-sm leading-7 text-muted-foreground">
-                      {section.confidenceRationale ?? "Section confidence will be scored once evidence reaches this part of the report."}
-                    </p>
-                  </CardContent>
-                </Card>
-              ))}
-            </div>
+                  </div>
+                  <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                    {pendingSectionTargets.map((section) => (
+                      <Card
+                        key={section.id}
+                        id={section.id}
+                        className="scroll-mt-32 border-border/60 bg-background/70 shadow-none"
+                      >
+                        <CardContent className="space-y-2 p-4">
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="font-medium text-foreground">{section.label}</div>
+                            <Badge className="rounded-full px-3 py-1" variant="outline">
+                              {section.readyCount > 0 ? `${section.readyCount}/${section.totalCount}` : "Pending"}
+                            </Badge>
+                          </div>
+                          <p className="text-sm leading-6 text-foreground/70">{section.pendingDescription}</p>
+                        </CardContent>
+                      </Card>
+                    ))}
+                    {pendingSourceTarget ? (
+                      <Card
+                        id={pendingSourceTarget.id}
+                        className="scroll-mt-32 border-border/60 bg-background/70 shadow-none"
+                      >
+                        <CardContent className="space-y-2 p-4">
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="font-medium text-foreground">{pendingSourceTarget.label}</div>
+                            <Badge className="rounded-full px-3 py-1" variant="outline">
+                              Pending
+                            </Badge>
+                          </div>
+                          <p className="text-sm leading-6 text-foreground/70">{pendingSourceTarget.pendingDescription}</p>
+                        </CardContent>
+                      </Card>
+                    ) : null}
+                  </div>
+                </div>
+              ) : null
+            ) : (
+              <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+                {document.sectionAssessments.map((section) => (
+                  <Card key={section.key} className="border-strong/70 bg-card/75 shadow-none">
+                    <CardContent className="space-y-3 p-5">
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <div className="font-medium text-foreground">{section.label}</div>
+                          <div className="mt-1 text-xs uppercase tracking-[0.2em] text-muted-foreground">
+                            {section.completenessLabel}
+                          </div>
+                        </div>
+                        <Badge className="rounded-full px-3 py-1" variant={section.status === "ready" ? "secondary" : "outline"}>
+                          {section.confidence !== null ? `${section.confidence}/100` : "Pending"}
+                        </Badge>
+                      </div>
+                      <p className="text-sm leading-7 text-muted-foreground">
+                        {section.confidenceRationale
+                          ? normalizeVisibleCopy(section.confidenceRationale)
+                          : "Section confidence will be scored once evidence reaches this part of the report."}
+                      </p>
+                    </CardContent>
+                  </Card>
+                ))}
+              </div>
+            )}
           </ReportSection>
 
-          <ReportSection
-            id="research"
-            eyebrow="Research"
-            title="Source-backed public signals"
-            description="Public company and external signals are summarized here with explicit citations and a visible split between facts, inferences, and hypotheses."
-          >
-            {researchSummary ? (
-              <div className="grid gap-4 lg:grid-cols-2">
-                <Card className="border-strong/70 bg-card/80 shadow-none">
-                  <CardHeader>
-                    <CardTitle className="text-xl">Growth priorities</CardTitle>
-                  </CardHeader>
-                  <CardContent className="space-y-4">
-                    {researchSummary.growthPriorities.length > 0 ? (
-                      researchSummary.growthPriorities.map((item, index) => (
-                        <div key={`${item.summary}-${index}`} className="rounded-3xl border border-border/70 bg-background/70 p-4">
-                          <p className="text-sm leading-7 text-muted-foreground">{item.summary}</p>
+          {showResearchSection ? (
+            <ReportSection
+              id="research"
+              eyebrow="Research"
+              title="Research"
+              description="Public-web signals are summarized here with explicit citations and a visible split between facts, inferences, and hypotheses."
+            >
+              {researchSummary ? (
+                <div className="grid gap-4 lg:grid-cols-2">
+                  {researchSummary.growthPriorities.length > 0 || !isBuildingReport ? (
+                    <Card className="border-strong/70 bg-card/80 shadow-none">
+                      <CardHeader>
+                        <CardTitle className="text-xl">Growth priorities</CardTitle>
+                      </CardHeader>
+                      <CardContent className="space-y-4">
+                        {researchSummary.growthPriorities.length > 0 ? (
+                          researchSummary.growthPriorities.map((item, index) => (
+                            <div key={`${item.summary}-${index}`} className="rounded-3xl border border-border/70 bg-background/70 p-4">
+                              <p className="text-sm leading-7 text-muted-foreground">{item.summary}</p>
+                              <div className="mt-3">
+                                <EvidencePills
+                                  sourceIds={item.sourceIds}
+                                  sources={document.sources}
+                                  onSelectSources={handleSelectSources}
+                                />
+                              </div>
+                            </div>
+                          ))
+                        ) : (
+                          <EmptySection
+                            title="Growth priorities pending"
+                            description="External enrichment has not yet surfaced confident growth signals."
+                            compact={isBuildingReport}
+                          />
+                        )}
+                      </CardContent>
+                    </Card>
+                  ) : null}
+
+                  <Card className="border-strong/70 bg-card/80 shadow-none">
+                    <CardHeader>
+                      <CardTitle className="text-xl">Signal summary</CardTitle>
+                    </CardHeader>
+                    <CardContent className="grid gap-4">
+                      {[
+                        {
+                          label: "AI maturity",
+                          value: `${researchSummary.aiMaturityEstimate.level}: ${researchSummary.aiMaturityEstimate.rationale}`,
+                          sourceIds: researchSummary.aiMaturityEstimate.sourceIds,
+                        },
+                        {
+                          label: "Regulatory sensitivity",
+                          value: `${researchSummary.regulatorySensitivity.level}: ${researchSummary.regulatorySensitivity.rationale}`,
+                          sourceIds: researchSummary.regulatorySensitivity.sourceIds,
+                        },
+                      ].map((item) => (
+                        <div key={item.label} className="rounded-3xl border border-border/70 bg-background/70 p-4">
+                          <div className="font-medium text-foreground">{item.label}</div>
+                          <p className="mt-2 text-sm leading-7 text-muted-foreground">{item.value}</p>
                           <div className="mt-3">
                             <EvidencePills
                               sourceIds={item.sourceIds}
@@ -681,148 +905,119 @@ export function ReportExperience({
                             />
                           </div>
                         </div>
+                      ))}
+                    </CardContent>
+                  </Card>
+
+                  {[
+                    { title: "Product signals", items: researchSummary.notableProductSignals },
+                    { title: "Hiring signals", items: researchSummary.notableHiringSignals },
+                    { title: "Trust signals", items: researchSummary.notableTrustSignals },
+                    { title: "Complaint themes", items: researchSummary.complaintThemes },
+                    { title: "Leadership and social themes", items: researchSummary.leadershipSocialThemes },
+                  ]
+                    .filter((group) => group.items.length > 0 || !isBuildingReport)
+                    .map((group) => (
+                      <Card key={group.title} className="border-strong/70 bg-card/80 shadow-none">
+                        <CardHeader>
+                          <CardTitle className="text-xl">{group.title}</CardTitle>
+                        </CardHeader>
+                        <CardContent className="space-y-4">
+                          {group.items.length > 0 ? (
+                            group.items.map((item, index) => (
+                              <div key={`${group.title}-${index}`} className="rounded-3xl border border-border/70 bg-background/70 p-4">
+                                <p className="text-sm leading-7 text-muted-foreground">{item.summary}</p>
+                                <div className="mt-3">
+                                  <EvidencePills
+                                    sourceIds={item.sourceIds}
+                                    sources={document.sources}
+                                    onSelectSources={handleSelectSources}
+                                  />
+                                </div>
+                              </div>
+                            ))
+                          ) : (
+                            <EmptySection
+                              title={`${group.title} not established yet`}
+                              description="Available public evidence did not support a confident summary for this signal cluster."
+                              compact={isBuildingReport}
+                            />
+                          )}
+                        </CardContent>
+                      </Card>
+                    ))}
+                </div>
+              ) : (
+                <EmptySection
+                  title="Research summary pending"
+                  description="This section will populate once the run completes external enrichment and fact-base synthesis."
+                  compact={isBuildingReport}
+                />
+              )}
+
+              {document.facts.length > 0 || !isBuildingReport ? (
+                <Card className="border-strong/70 bg-card/80 shadow-none">
+                  <CardHeader>
+                    <CardTitle className="text-2xl">Fact base</CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-4">
+                    {document.facts.length > 0 ? (
+                      document.facts.map((fact) => (
+                        <div key={fact.id} className="rounded-3xl border border-border/70 bg-background/70 p-4">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span
+                              className={cn(
+                                "rounded-full border px-3 py-1 text-xs font-medium uppercase tracking-[0.2em]",
+                                classificationBadgeClass(fact.classification),
+                              )}
+                            >
+                              {fact.classification}
+                            </span>
+                            <Badge variant="outline" className="rounded-full px-3 py-1">
+                              {fact.confidence}/100 confidence
+                            </Badge>
+                            <Badge variant="outline" className="rounded-full px-3 py-1 capitalize">
+                              {fact.freshness}
+                            </Badge>
+                          </div>
+                          <p className="mt-3 text-base leading-7 text-foreground">{fact.statement}</p>
+                          {fact.rationale ? (
+                            <p className="mt-2 text-sm leading-7 text-muted-foreground">{fact.rationale}</p>
+                          ) : null}
+                          {fact.evidenceSnippet ? (
+                            <div className="mt-3 rounded-3xl border border-border/70 bg-card/80 p-4 text-sm leading-7 text-muted-foreground">
+                              {fact.evidenceSnippet}
+                            </div>
+                          ) : null}
+                          <div className="mt-3">
+                            <EvidencePills
+                              sourceIds={fact.sourceIds}
+                              sources={document.sources}
+                              onSelectSources={handleSelectSources}
+                            />
+                          </div>
+                        </div>
                       ))
                     ) : (
                       <EmptySection
-                        title="Growth priorities pending"
-                        description="External enrichment has not yet surfaced confident growth signals."
+                        title="Fact base pending"
+                        description="Claims will appear here once the run has normalized source-backed facts and labeled them as facts, inferences, or hypotheses."
+                        compact={isBuildingReport}
                       />
                     )}
                   </CardContent>
                 </Card>
+              ) : null}
+            </ReportSection>
+          ) : null}
 
-                <Card className="border-strong/70 bg-card/80 shadow-none">
-                  <CardHeader>
-                    <CardTitle className="text-xl">Signal summary</CardTitle>
-                  </CardHeader>
-                  <CardContent className="grid gap-4">
-                    {[
-                      {
-                        label: "AI maturity",
-                        value: `${researchSummary.aiMaturityEstimate.level}: ${researchSummary.aiMaturityEstimate.rationale}`,
-                        sourceIds: researchSummary.aiMaturityEstimate.sourceIds,
-                      },
-                      {
-                        label: "Regulatory sensitivity",
-                        value: `${researchSummary.regulatorySensitivity.level}: ${researchSummary.regulatorySensitivity.rationale}`,
-                        sourceIds: researchSummary.regulatorySensitivity.sourceIds,
-                      },
-                    ].map((item) => (
-                      <div key={item.label} className="rounded-3xl border border-border/70 bg-background/70 p-4">
-                        <div className="font-medium text-foreground">{item.label}</div>
-                        <p className="mt-2 text-sm leading-7 text-muted-foreground">{item.value}</p>
-                        <div className="mt-3">
-                          <EvidencePills
-                            sourceIds={item.sourceIds}
-                            sources={document.sources}
-                            onSelectSources={handleSelectSources}
-                          />
-                        </div>
-                      </div>
-                    ))}
-                  </CardContent>
-                </Card>
-
-                {[
-                  { title: "Product signals", items: researchSummary.notableProductSignals },
-                  { title: "Hiring signals", items: researchSummary.notableHiringSignals },
-                  { title: "Trust signals", items: researchSummary.notableTrustSignals },
-                  { title: "Complaint themes", items: researchSummary.complaintThemes },
-                  { title: "Leadership and social themes", items: researchSummary.leadershipSocialThemes },
-                ].map((group) => (
-                  <Card key={group.title} className="border-strong/70 bg-card/80 shadow-none">
-                    <CardHeader>
-                      <CardTitle className="text-xl">{group.title}</CardTitle>
-                    </CardHeader>
-                    <CardContent className="space-y-4">
-                      {group.items.length > 0 ? (
-                        group.items.map((item, index) => (
-                          <div key={`${group.title}-${index}`} className="rounded-3xl border border-border/70 bg-background/70 p-4">
-                            <p className="text-sm leading-7 text-muted-foreground">{item.summary}</p>
-                            <div className="mt-3">
-                              <EvidencePills
-                                sourceIds={item.sourceIds}
-                                sources={document.sources}
-                                onSelectSources={handleSelectSources}
-                              />
-                            </div>
-                          </div>
-                        ))
-                      ) : (
-                        <EmptySection
-                          title={`${group.title} not established yet`}
-                          description="Available public evidence did not support a confident summary for this signal cluster."
-                        />
-                      )}
-                    </CardContent>
-                  </Card>
-                ))}
-              </div>
-            ) : (
-              <EmptySection
-                title="Research summary pending"
-                description="This section will populate once the run completes external enrichment and fact-base synthesis."
-              />
-            )}
-
-            <Card className="border-strong/70 bg-card/80 shadow-none">
-              <CardHeader>
-                <CardTitle className="text-2xl">Fact base</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                {document.facts.length > 0 ? (
-                  document.facts.map((fact) => (
-                    <div key={fact.id} className="rounded-3xl border border-border/70 bg-background/70 p-4">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <span
-                          className={cn(
-                            "rounded-full border px-3 py-1 text-xs font-medium uppercase tracking-[0.2em]",
-                            classificationBadgeClass(fact.classification),
-                          )}
-                        >
-                          {fact.classification}
-                        </span>
-                        <Badge variant="outline" className="rounded-full px-3 py-1">
-                          {fact.confidence}/100 confidence
-                        </Badge>
-                        <Badge variant="outline" className="rounded-full px-3 py-1 capitalize">
-                          {fact.freshness}
-                        </Badge>
-                      </div>
-                      <p className="mt-3 text-base leading-7 text-foreground">{fact.statement}</p>
-                      {fact.rationale ? (
-                        <p className="mt-2 text-sm leading-7 text-muted-foreground">{fact.rationale}</p>
-                      ) : null}
-                      {fact.evidenceSnippet ? (
-                        <div className="mt-3 rounded-3xl border border-border/70 bg-card/80 p-4 text-sm leading-7 text-muted-foreground">
-                          {fact.evidenceSnippet}
-                        </div>
-                      ) : null}
-                      <div className="mt-3">
-                        <EvidencePills
-                          sourceIds={fact.sourceIds}
-                          sources={document.sources}
-                          onSelectSources={handleSelectSources}
-                        />
-                      </div>
-                    </div>
-                  ))
-                ) : (
-                  <EmptySection
-                    title="Fact base pending"
-                    description="Claims will appear here once the run has normalized source-backed facts and labeled them as facts, inferences, or hypotheses."
-                  />
-                )}
-              </CardContent>
-            </Card>
-          </ReportSection>
-
-          <ReportSection
-            id="use-cases"
-            eyebrow="Use Cases"
-            title="Prioritized AI opportunities"
-            description="Candidate use cases are scored with explicit components so the ranking is explainable rather than opaque."
-          >
+          {showUseCasesSection ? (
+            <ReportSection
+              id="use-cases"
+              eyebrow="Use Cases"
+              title="Prioritized AI opportunities"
+              description="Candidate use cases are scored with explicit components so the ranking is explainable rather than opaque."
+            >
             {accountPlan ? (
               <div className="space-y-4">
                 <div className="grid gap-4 lg:grid-cols-3">
@@ -993,17 +1188,20 @@ export function ReportExperience({
             ) : (
               <EmptySection
                 title="Use-case scoring pending"
-                description="The planning stage has not yet produced the ranked candidate list, motion recommendation, and pilot packaging."
+                description="The brief is still ranking opportunities, motion fit, and pilot structure."
+                compact={isBuildingReport}
               />
             )}
-          </ReportSection>
+            </ReportSection>
+          ) : null}
 
-          <ReportSection
-            id="stakeholders"
-            eyebrow="Stakeholders"
-            title="Likely sponsors, objections, and discovery paths"
-            description="Stakeholder entries remain explicit hypotheses until direct account discovery confirms them."
-          >
+          {showStakeholdersSection ? (
+            <ReportSection
+              id="stakeholders"
+              eyebrow="Stakeholders"
+              title="Likely sponsors, objections, and discovery paths"
+              description="Stakeholder entries remain explicit hypotheses until direct account discovery confirms them."
+            >
             {accountPlan ? (
               <div className="space-y-4">
                 <div className="grid gap-4 xl:grid-cols-3">
@@ -1078,17 +1276,20 @@ export function ReportExperience({
             ) : (
               <EmptySection
                 title="Stakeholder hypotheses pending"
-                description="This section will populate once account planning has enough evidence to frame likely sponsors, objections, and discovery gaps."
+                description="This section will populate once the brief has enough evidence to frame likely sponsors, objections, and discovery gaps."
+                compact={isBuildingReport}
               />
             )}
-          </ReportSection>
+            </ReportSection>
+          ) : null}
 
-          <ReportSection
-            id="pilot-plan"
-            eyebrow="Pilot Plan"
-            title="90-day pilot structure"
-            description="The pilot plan stays conservative when evidence is thin and expands only after the highest-confidence workflow proves value."
-          >
+          {showPilotPlanSection ? (
+            <ReportSection
+              id="pilot-plan"
+              eyebrow="Pilot Plan"
+              title="90-day pilot plan"
+              description="The pilot plan stays conservative when evidence is thin and expands only after the highest-confidence workflow proves value."
+            >
             {accountPlan ? (
               <div className="space-y-4">
                 <Card className="border-strong/70 bg-card/85 shadow-panel">
@@ -1178,16 +1379,19 @@ export function ReportExperience({
               <EmptySection
                 title="Pilot plan pending"
                 description="The 90-day pilot structure will appear once the run has selected the highest-confidence workflows and motion recommendation."
+                compact={isBuildingReport}
               />
             )}
-          </ReportSection>
+            </ReportSection>
+          ) : null}
 
-          <ReportSection
-            id="expansion-scenarios"
-            eyebrow="Expansion Scenarios"
-            title="Low, base, and high paths"
-            description="Scenario planning stays tied to explicit assumptions so the report does not imply certainty where the evidence does not support it."
-          >
+          {showExpansionSection ? (
+            <ReportSection
+              id="expansion-scenarios"
+              eyebrow="Expansion Scenarios"
+              title="Low, base, and high paths"
+              description="Scenario planning stays tied to explicit assumptions so the report does not imply certainty where the evidence does not support it."
+            >
             {accountPlan ? (
               <div className="grid gap-4 xl:grid-cols-3">
                 {[
@@ -1230,16 +1434,19 @@ export function ReportExperience({
               <EmptySection
                 title="Expansion scenarios pending"
                 description="This section will appear once the planning stage has enough evidence to describe low, base, and high adoption paths."
+                compact={isBuildingReport}
               />
             )}
-          </ReportSection>
+            </ReportSection>
+          ) : null}
 
-          <ReportSection
-            id="sources"
-            eyebrow="Sources"
-            title="Full source registry"
-            description="Every citation in the report resolves to a persisted source from this run. If a source does not exist here, the report should not treat it as evidence."
-          >
+          {showSourcesSection ? (
+            <ReportSection
+              id="sources"
+              eyebrow="Sources"
+              title="Cited sources"
+              description="Every citation in this brief resolves to a persisted source from this run. If a source does not exist here, the brief should not treat it as evidence."
+            >
             {document.sources.length > 0 ? (
               <div className="grid gap-4">
                 {document.sources.map((source) => (
@@ -1298,28 +1505,34 @@ export function ReportExperience({
               <EmptySection
                 title="Sources pending"
                 description="Source records will appear here once the crawl and enrichment steps have persisted usable evidence."
+                compact={isBuildingReport}
               />
             )}
-          </ReportSection>
+            </ReportSection>
+          ) : null}
 
           {!canShowCompletedReport ? (
-            <Card className="border-strong/80 bg-card/82 shadow-none">
-              <CardContent className="p-5 text-sm leading-7 text-muted-foreground">
-                The report is still building. Stay on this page to follow the live pipeline, or come back later using
-                the same public share link and recent reports list.
+            <Card className="border-border/70 bg-card/82 shadow-none">
+              <CardContent className="p-5 text-sm leading-7 text-foreground/70">
+                This AI account brief is still building. Stay on this page for live build details below, or come back
+                later using the same share link and recent reports list.
               </CardContent>
             </Card>
           ) : null}
+
+          <ReportStatusPanel status={status} isPolling={isPolling} errorMessage={errorMessage} />
         </div>
 
-        <div className="hidden xl:block">
-          <div className="sticky top-28">
-            <ReportSourcePanel sources={document.sources} selectedSourceIds={selectedSourceIds} />
+        {showDesktopSourceRail ? (
+          <div className="hidden xl:block">
+            <div className="sticky top-28">
+              <ReportSourcePanel sources={document.sources} selectedSourceIds={selectedSourceIds} />
+            </div>
           </div>
-        </div>
+        ) : null}
       </Container>
 
-      {isMobileSourcePanelOpen ? (
+      {isMobileSourcePanelOpen && showDesktopSourceRail ? (
         <div className="fixed inset-0 z-50 xl:hidden">
           <div className="absolute inset-0 bg-foreground/20 backdrop-blur-sm" onClick={() => setIsMobileSourcePanelOpen(false)} />
           <div className="absolute inset-x-0 bottom-0 max-h-[82vh] overflow-y-auto rounded-t-[2rem] bg-panel p-4">

@@ -37,17 +37,25 @@ export function ReportSourcePanel({
         .map((sourceId) => sources.find((source) => source.id === sourceId))
         .filter((source): source is ReportSourceRecord => Boolean(source))
     : [];
-  const displaySources = selectedSources.length > 0 ? selectedSources : sources.slice(0, 3);
+  const hasSelectedSources = selectedSources.length > 0;
+  const hasPersistedSources = sources.length > 0;
+  const displaySources = selectedSources;
 
   return (
-    <Card className="border-strong/80 bg-panel/92 shadow-panel">
+    <Card
+      className={
+        hasSelectedSources ? "border-border/70 bg-panel/92 shadow-panel" : "border-border/60 bg-panel/78 shadow-none"
+      }
+    >
       <CardHeader className="space-y-4">
         <div className="flex items-start justify-between gap-4">
           <div className="space-y-2">
             <div className="text-xs font-medium uppercase tracking-[0.24em] text-muted-foreground">Evidence detail</div>
-            <CardTitle className="text-2xl">Source panel</CardTitle>
-            <p className="text-sm leading-7 text-muted-foreground">
-              Select evidence pills anywhere in the report to inspect the underlying sources without losing your place.
+            <CardTitle className="text-2xl">Sources</CardTitle>
+            <p className="text-sm leading-7 text-foreground/70">
+              {hasSelectedSources
+                ? "Inspect the cited sources behind the active claims without losing your place."
+                : "Select a citation to inspect sources."}
             </p>
           </div>
           {showCloseButton ? (
@@ -59,9 +67,7 @@ export function ReportSourcePanel({
         <div className="grid gap-3 sm:grid-cols-2">
           <div className="rounded-[1.5rem] border border-border/70 bg-background/72 p-4">
             <div className="text-[11px] font-medium uppercase tracking-[0.22em] text-muted-foreground">View</div>
-            <div className="mt-2 font-medium text-foreground">
-              {selectedSources.length > 0 ? "Selected citations" : "Source registry preview"}
-            </div>
+            <div className="mt-2 font-medium text-foreground">{hasSelectedSources ? "Selected citations" : "No citation selected"}</div>
           </div>
           <div className="rounded-[1.5rem] border border-border/70 bg-background/72 p-4">
             <div className="text-[11px] font-medium uppercase tracking-[0.22em] text-muted-foreground">Sources shown</div>
@@ -72,10 +78,15 @@ export function ReportSourcePanel({
         </div>
       </CardHeader>
       <CardContent className="space-y-4">
-        {displaySources.length === 0 ? (
-          <div className="rounded-[1.75rem] border border-dashed border-border/70 bg-background/72 p-5 text-sm leading-7 text-muted-foreground">
-            No sources have been persisted for this run yet. Cited evidence will appear here as crawl and research
-            steps commit source records.
+        {!hasPersistedSources ? (
+          <div className="rounded-[1.75rem] border border-dashed border-border/60 bg-background/70 p-5 text-sm leading-7 text-foreground/70">
+            <p>Select a citation to inspect sources.</p>
+            <p className="mt-2">Cited sources will appear here as evidence is collected.</p>
+          </div>
+        ) : !hasSelectedSources ? (
+          <div className="rounded-[1.75rem] border border-dashed border-border/60 bg-background/70 p-5 text-sm leading-7 text-foreground/70">
+            <p>Select a citation to inspect sources.</p>
+            <p className="mt-2">Use the evidence pills in the brief to load the cited sources for the active claim.</p>
           </div>
         ) : (
           displaySources.map((source) => (
@@ -125,7 +136,7 @@ export function ReportSourcePanel({
         <div className="rounded-[1.75rem] border border-border/70 bg-background/72 p-4 text-sm leading-7 text-muted-foreground">
           <div className="flex items-center gap-2 font-medium text-foreground">
             <Files className="h-4 w-4 text-primary" />
-            Citation behavior
+            How citations work
           </div>
           <p className="mt-2">
             Evidence pills always point to known persisted sources from this run. When a citation is missing, the UI

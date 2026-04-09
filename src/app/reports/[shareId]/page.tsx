@@ -31,7 +31,7 @@ export default async function ReportPage({ params }: ReportPageProps) {
               className="inline-flex items-center gap-2 rounded-full border border-border/70 bg-card/80 px-4 py-2 text-sm text-foreground transition hover:border-primary/30 hover:text-primary"
             >
               <ArrowLeft className="h-4 w-4" />
-              Back to submit
+              New report
             </Link>
             <Badge className="rounded-full px-4 py-1.5 capitalize" variant="secondary">
               {pageModel.status.replace("-", " ")}
@@ -50,7 +50,7 @@ export default async function ReportPage({ params }: ReportPageProps) {
               <p>{pageModel.message}</p>
               <div className="flex flex-wrap gap-2">
                 <Button asChild>
-                  <Link href="/">Submit a company URL</Link>
+                  <Link href="/">New report</Link>
                 </Button>
               </div>
             </CardContent>
@@ -71,7 +71,7 @@ export default async function ReportPage({ params }: ReportPageProps) {
         <Container>
           <Card className="border-strong/70 bg-card/85 shadow-panel">
             <CardContent className="p-6 text-sm leading-7 text-muted-foreground">
-              The report metadata exists, but the full public document could not be loaded.
+              The report metadata exists, but the full shareable report could not be loaded.
             </CardContent>
           </Card>
         </Container>
