@@ -66,8 +66,8 @@ export default function HomePage() {
   return (
     <>
       <SectionFrame className="overflow-hidden pb-14 pt-8 sm:pt-12">
-        <Container className="grid gap-10 lg:grid-cols-[1.1fr_0.9fr] lg:items-start">
-          <div className="space-y-8 pt-2">
+        <Container className="grid gap-10 lg:grid-cols-[1.1fr_0.9fr] lg:items-stretch">
+          <div className="flex h-full flex-col gap-8 pt-2">
             <div className="space-y-6">
               <Badge variant="secondary" className="rounded-full px-4 py-1 text-xs uppercase tracking-[0.22em]">
                 FOR ACCOUNT TEAMS
@@ -82,17 +82,9 @@ export default function HomePage() {
                   visible.
                 </p>
               </div>
-              <div className="flex flex-wrap gap-3">
-                <Button asChild size="lg">
-                  <Link href="/#generate-report">
-                    Generate account brief
-                    <ArrowRight className="h-4 w-4" />
-                  </Link>
-                </Button>
-              </div>
             </div>
 
-            <div className="grid gap-3 md:grid-cols-3">
+            <div className="mt-auto grid gap-3 md:grid-cols-3">
               {proofBlocks.map((item) => (
                 <Card key={item.title} className="border-border/70 bg-card/74 shadow-none">
                   <CardContent className="space-y-2 p-5">
