@@ -12,6 +12,22 @@ import type { ApiResponse } from "@/lib/types/api";
 import type { CreateReportResponse } from "@/lib/types/report";
 import { reportRequestSchema } from "@/lib/validation/report-request";
 
+function getLandingErrorMessage(message: string) {
+  if (message === "Enter a public company URL. Local and private-network targets are blocked.") {
+    return "Enter a publicly accessible company website. Local and private-network targets are blocked.";
+  }
+
+  if (message === "Enter a valid public company URL.") {
+    return "Enter a valid company website.";
+  }
+
+  if (message === "Enter a company domain, not a raw IP address.") {
+    return "Enter a company website, not a raw IP address.";
+  }
+
+  return message;
+}
+
 export function ReportUrlForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -33,7 +49,7 @@ export function ReportUrlForm() {
     const parsed = reportRequestSchema.safeParse({ companyUrl });
 
     if (!parsed.success) {
-      setErrorMessage(parsed.error.issues[0]?.message ?? "Enter a valid public company URL.");
+      setErrorMessage(getLandingErrorMessage(parsed.error.issues[0]?.message ?? "Enter a valid company website."));
       return;
     }
 
@@ -52,7 +68,7 @@ export function ReportUrlForm() {
       const payload = (await response.json()) as ApiResponse<CreateReportResponse>;
 
       if (!response.ok || !payload.ok) {
-        setErrorMessage(payload.ok ? "Unable to start the report right now." : payload.error.message);
+        setErrorMessage(payload.ok ? "Unable to start the report right now." : getLandingErrorMessage(payload.error.message));
         return;
       }
 
@@ -71,32 +87,36 @@ export function ReportUrlForm() {
   };
 
   return (
-    <Card className="overflow-hidden border-strong/80 bg-card/84 shadow-panel">
+    <Card className="overflow-hidden border-border/80 bg-card/84 shadow-panel">
       <CardHeader className="space-y-4">
-        <div className="text-[11px] font-medium uppercase tracking-[0.22em] text-muted-foreground">Start a report run</div>
-        <CardTitle className="text-3xl text-primary sm:text-[2.1rem]">Submit a public company URL</CardTitle>
-        <CardDescription className="text-base leading-7 text-muted-foreground">
-          Account Atlas creates the public report URL immediately, starts the research pipeline, and keeps the report
-          pinned in this browser for easy revisit during a demo.
+        <div className="text-[11px] font-medium uppercase tracking-[0.22em] text-muted-foreground">GENERATE A REPORT</div>
+        <CardTitle className="text-3xl text-primary sm:text-[2.1rem]">Create a shareable account brief</CardTitle>
+        <CardDescription className="text-base leading-7 text-foreground/75">
+          Enter a company website to generate a cited AI account strategy for your team.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-5">
         <form className="space-y-4" onSubmit={handleSubmit} noValidate>
-          <div className="space-y-2">
+          <div className="space-y-2.5">
             <label className="text-sm font-medium text-foreground" htmlFor="company-url">
-              Company URL
+              Company website
             </label>
             <Input
               id="company-url"
               name="companyUrl"
               value={companyUrl}
               onChange={(event) => setCompanyUrl(event.target.value)}
-              placeholder="https://example.com"
+              placeholder="https://company.com"
               autoComplete="url"
               spellCheck={false}
               aria-invalid={Boolean(errorMessage)}
               aria-describedby={errorMessage ? "company-url-error" : undefined}
+              className="border-border/80 bg-background/90 placeholder:text-muted-foreground/80 focus-visible:border-primary/50 focus-visible:ring-primary/35"
             />
+            <p className="text-sm leading-6 text-foreground/70">
+              We use publicly accessible company pages and linked public documents. We will resolve the business entity
+              automatically and flag ambiguity when evidence is thin.
+            </p>
           </div>
 
           {errorMessage ? (
@@ -112,34 +132,30 @@ export function ReportUrlForm() {
             {isSubmitting ? (
               <>
                 <LoaderCircle className="mr-2 h-4 w-4 animate-spin" />
-                Starting public report run
+                Generating account brief
               </>
             ) : (
               <>
-                Start account research
+                Generate account brief
                 <ArrowRight className="h-4 w-4" />
               </>
             )}
           </Button>
+          <p className="text-sm leading-6 text-foreground/70">
+            Includes prioritized use cases, motion recommendation, stakeholder hypotheses, and a 90-day pilot plan.
+          </p>
         </form>
 
-        <div className="rounded-[1.75rem] border border-border/70 bg-background/75 p-4 text-sm leading-7 text-muted-foreground">
+        <div className="rounded-[1.5rem] bg-background/70 p-4 text-sm leading-6 text-foreground/70">
           <div className="flex items-center gap-2 font-medium text-foreground">
             <ShieldAlert className="h-4 w-4 text-primary" />
-            Public-app guardrails
+            URL requirements
           </div>
           <ul className="mt-3 space-y-2">
-            <li>Only public `http` and `https` URLs are accepted.</li>
+            <li>Only publicly accessible `http` and `https` URLs are accepted.</li>
             <li>`localhost`, raw IP hosts, custom ports, and private-network targets are blocked.</li>
-            <li>Recent completed or in-flight reports for the same company may be reused instead of starting a new run.</li>
-            <li>Anonymous report creation is rate-limited.</li>
-            <li>Each major recommendation is expected to resolve to known sources, not invented citations.</li>
+            <li>Recent in-flight or completed reports for the same company may be reused.</li>
           </ul>
-        </div>
-
-        <div className="rounded-[1.75rem] border border-primary/10 bg-gradient-to-br from-secondary/75 via-card to-muted p-4 text-sm leading-7 text-muted-foreground">
-          After submission you land on the public report page immediately, follow the live run status, and review the
-          same share link as the research and planning sections complete.
         </div>
       </CardContent>
     </Card>
