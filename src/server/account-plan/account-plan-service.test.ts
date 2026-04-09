@@ -537,7 +537,7 @@ describe("createAccountPlanService", () => {
         schemaName: "account_plan_candidate_use_cases",
         tools: undefined,
         include: undefined,
-        timeoutMs: 90_000,
+        timeoutMs: 150_000,
         maxAttempts: 1,
       },
       {

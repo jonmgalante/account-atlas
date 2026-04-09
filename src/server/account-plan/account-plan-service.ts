@@ -17,6 +17,7 @@ import {
   type OpenAIResearchClient,
   type ParsedStructuredResponse,
 } from "@/server/openai/client";
+import { logServerEvent } from "@/server/observability/logger";
 import { createResearchPipelineService } from "@/server/research/research-service";
 import { buildSourceRegistry } from "@/server/research/source-registry";
 import { normalizeUseCaseScorecard, rankAccountPlanUseCases } from "@/server/account-plan/scoring";
@@ -33,7 +34,7 @@ type AccountPlanServiceDependencies = {
   researchService?: ReturnType<typeof createResearchPipelineService>;
 };
 
-const ACCOUNT_PLAN_USE_CASE_TIMEOUT_MS = 90_000;
+const ACCOUNT_PLAN_USE_CASE_TIMEOUT_MS = 150_000;
 const ACCOUNT_PLAN_NARRATIVE_TIMEOUT_MS = 75_000;
 const ACCOUNT_PLAN_OPENAI_MAX_ATTEMPTS = 1;
 
@@ -494,11 +495,24 @@ export function createAccountPlanService(dependencies: AccountPlanServiceDepende
       }
 
       const validSourceIds = new Set(sources.map((source) => source.id));
+      const candidateUseCaseInput = buildCandidateUseCasePrompt(workingContext, sources, facts, researchSummary);
+
+      logServerEvent("info", "account_plan.openai.requested", {
+        shareId: workingContext.report.shareId,
+        runId: workingContext.run.id,
+        operation: "candidate_use_cases",
+        timeoutMs: ACCOUNT_PLAN_USE_CASE_TIMEOUT_MS,
+        maxOutputTokens: 7_000,
+        sourceCount: sources.length,
+        factCount: facts.length,
+        inputChars: candidateUseCaseInput.length,
+      });
+
       const useCaseResponse = await openAIClient.parseStructuredOutput({
         model: OPENAI_SYNTHESIS_MODEL,
         instructions:
           "Generate 12 to 15 evidence-backed enterprise AI use cases from the provided research summary and fact base. Use only source IDs from the registry. Prefer practical, measurable use cases and keep uncertainty explicit when evidence is thin.",
-        input: buildCandidateUseCasePrompt(workingContext, sources, facts, researchSummary),
+        input: candidateUseCaseInput,
         schema: candidateUseCaseGenerationSchema,
         schemaName: "account_plan_candidate_use_cases",
         maxOutputTokens: 7_000,
@@ -520,11 +534,25 @@ export function createAccountPlanService(dependencies: AccountPlanServiceDepende
         throw new Error("Account-plan synthesis requires at least three valid use cases after ranking.");
       }
 
+      const narrativeInput = buildAccountPlanNarrativePrompt(workingContext, sources, facts, researchSummary, rankedUseCases);
+
+      logServerEvent("info", "account_plan.openai.requested", {
+        shareId: workingContext.report.shareId,
+        runId: workingContext.run.id,
+        operation: "narrative",
+        timeoutMs: ACCOUNT_PLAN_NARRATIVE_TIMEOUT_MS,
+        maxOutputTokens: 6_000,
+        sourceCount: sources.length,
+        factCount: facts.length,
+        rankedUseCaseCount: rankedUseCases.length,
+        inputChars: narrativeInput.length,
+      });
+
       const narrativeResponse = await openAIClient.parseStructuredOutput({
         model: OPENAI_SYNTHESIS_MODEL,
         instructions:
           "Generate the final evidence-backed account plan narrative. Use only valid source IDs from the registry, recommend a clear motion, keep stakeholder entries hypothetical, and do not imply certainty when evidence is weak.",
-        input: buildAccountPlanNarrativePrompt(workingContext, sources, facts, researchSummary, rankedUseCases),
+        input: narrativeInput,
         schema: accountPlanNarrativeSchema,
         schemaName: "account_plan_narrative",
         maxOutputTokens: 6_000,
