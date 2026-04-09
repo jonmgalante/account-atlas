@@ -17,11 +17,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         />
         <Container className="flex items-center justify-between gap-4 py-4">
           <Link href="/" className="flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-primary text-sm font-semibold text-primary-foreground shadow-sm shadow-primary/15">
-              AA
-            </div>
             <div className="space-y-0.5">
-              <div className="text-sm font-semibold uppercase tracking-[0.24em] text-primary">ACCOUNT ATLAS</div>
+              <div className="text-sm font-semibold text-primary">Account Atlas</div>
               <div className="text-xs text-foreground/70">Evidence-backed AI account strategy</div>
             </div>
           </Link>

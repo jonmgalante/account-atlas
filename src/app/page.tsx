@@ -74,12 +74,11 @@ export default function HomePage() {
               </Badge>
               <div className="space-y-5">
                 <h1 className="max-w-4xl text-balance text-5xl leading-tight text-primary sm:text-6xl">
-                  Turn any company URL into an evidence-backed AI account brief.
+                  Turn any company website into an evidence-backed account brief.
                 </h1>
                 <p className="max-w-3xl text-balance text-lg leading-8 text-foreground/80 sm:text-xl">
                   Account Atlas researches a company, builds a cited fact base, prioritizes likely AI use cases,
-                  recommends the right motion, and outlines a 90-day pilot plan - with confidence and uncertainty made
-                  visible.
+                  recommends the right motion, and outlines a 90-day pilot plan.
                 </p>
               </div>
             </div>
