@@ -11,7 +11,6 @@ import {
   Link2,
   LoaderCircle,
   RefreshCcw,
-  ShieldAlert,
   Target,
 } from "lucide-react";
 
@@ -480,7 +479,10 @@ export function ReportExperience({
 
   const handleSelectSources = (sourceIds: number[]) => {
     setSelectedSourceIds(sourceIds);
-    setIsMobileSourcePanelOpen(true);
+
+    if (window.matchMedia("(max-width: 1279px)").matches) {
+      setIsMobileSourcePanelOpen(true);
+    }
   };
 
   const handleOpenBuildDetails = () => {
@@ -497,12 +499,7 @@ export function ReportExperience({
         className="pointer-events-none absolute inset-0 bg-gradient-to-b from-background/60 via-background/35 to-background/60"
       />
       <Container
-        className={cn(
-          "relative mx-auto grid max-w-[80rem] gap-5",
-          showDesktopSourceRail
-            ? "xl:grid-cols-[minmax(0,58rem)_18rem] xl:justify-center"
-            : "xl:grid-cols-[minmax(0,60rem)] xl:justify-center",
-        )}
+        className="relative mx-auto grid max-w-[80rem] gap-5 xl:grid-cols-[minmax(0,60rem)] xl:justify-center"
       >
         <div className="mx-auto w-full max-w-[60rem] space-y-6 xl:max-w-none">
           <div className="flex flex-wrap items-center justify-between gap-3">
@@ -858,36 +855,6 @@ export function ReportExperience({
                   </Card>
                 </div>
 
-                {document.thinEvidenceWarnings.length > 0 ? (
-                  <div className="grid gap-3">
-                    {document.thinEvidenceWarnings.map((warning) => (
-                      <Card
-                        key={warning.id}
-                        className={cn(
-                          "shadow-none",
-                          warning.level === "warning"
-                            ? "border-amber-200 bg-amber-50"
-                            : "border-sky-200 bg-sky-50",
-                        )}
-                      >
-                        <CardContent className="space-y-3 p-5 text-sm leading-7">
-                          <div className="flex items-center gap-2 font-medium text-foreground">
-                            <ShieldAlert className="h-4 w-4 text-primary" />
-                            {normalizeVisibleCopy(warning.title)}
-                          </div>
-                          <p className="text-muted-foreground">{normalizeVisibleCopy(warning.message)}</p>
-                          {warning.sourceIds.length > 0 ? (
-                            <EvidencePills
-                              sourceIds={warning.sourceIds}
-                              sources={document.sources}
-                              onSelectSources={handleSelectSources}
-                            />
-                          ) : null}
-                        </CardContent>
-                      </Card>
-                    ))}
-                  </div>
-                ) : null}
               </ReportSection>
 
               {showBriefReadiness ? (
@@ -1357,18 +1324,21 @@ export function ReportExperience({
                 description="Research detail, fact classification, and citation traceability live here."
               >
                 {researchSummary ? (
-                  <div className="grid gap-4 lg:grid-cols-2">
+                  <div className="grid items-start gap-4 lg:grid-cols-2">
                     {researchSummary.growthPriorities.length > 0 || !isBuildingReport ? (
-                      <Card className="border-strong/70 bg-card/80 shadow-none">
+                      <Card className="min-w-0 overflow-hidden border-strong/70 bg-card/80 shadow-none">
                         <CardHeader>
                           <CardTitle className="text-xl">Growth priorities</CardTitle>
                         </CardHeader>
-                        <CardContent className="space-y-4">
+                        <CardContent className="min-w-0 space-y-4">
                           {researchSummary.growthPriorities.length > 0 ? (
                             researchSummary.growthPriorities.map((item, index) => (
-                              <div key={`${item.summary}-${index}`} className="rounded-3xl border border-border/70 bg-background/70 p-4">
+                              <div
+                                key={`${item.summary}-${index}`}
+                                className="min-w-0 overflow-hidden rounded-3xl border border-border/70 bg-background/70 p-4"
+                              >
                                 <p className="text-sm leading-7 text-muted-foreground">{item.summary}</p>
-                                <div className="mt-3">
+                                <div className="mt-3 min-w-0">
                                   <EvidencePills
                                     sourceIds={item.sourceIds}
                                     sources={document.sources}
@@ -1388,11 +1358,11 @@ export function ReportExperience({
                       </Card>
                     ) : null}
 
-                    <Card className="border-strong/70 bg-card/80 shadow-none">
+                    <Card className="min-w-0 overflow-hidden border-strong/70 bg-card/80 shadow-none">
                       <CardHeader>
                         <CardTitle className="text-xl">Signal summary</CardTitle>
                       </CardHeader>
-                      <CardContent className="grid gap-4">
+                      <CardContent className="grid min-w-0 gap-4">
                         {[
                           {
                             label: "AI maturity",
@@ -1405,10 +1375,13 @@ export function ReportExperience({
                             sourceIds: researchSummary.regulatorySensitivity.sourceIds,
                           },
                         ].map((item) => (
-                          <div key={item.label} className="rounded-3xl border border-border/70 bg-background/70 p-4">
+                          <div
+                            key={item.label}
+                            className="min-w-0 overflow-hidden rounded-3xl border border-border/70 bg-background/70 p-4"
+                          >
                             <div className="font-medium text-foreground">{item.label}</div>
                             <p className="mt-2 text-sm leading-7 text-muted-foreground">{item.value}</p>
-                            <div className="mt-3">
+                            <div className="mt-3 min-w-0">
                               <EvidencePills
                                 sourceIds={item.sourceIds}
                                 sources={document.sources}
@@ -1429,16 +1402,19 @@ export function ReportExperience({
                     ]
                       .filter((group) => group.items.length > 0 || !isBuildingReport)
                       .map((group) => (
-                        <Card key={group.title} className="border-strong/70 bg-card/80 shadow-none">
+                        <Card key={group.title} className="min-w-0 overflow-hidden border-strong/70 bg-card/80 shadow-none">
                           <CardHeader>
                             <CardTitle className="text-xl">{group.title}</CardTitle>
                           </CardHeader>
-                          <CardContent className="space-y-4">
+                          <CardContent className="min-w-0 space-y-4">
                             {group.items.length > 0 ? (
                               group.items.map((item, index) => (
-                                <div key={`${group.title}-${index}`} className="rounded-3xl border border-border/70 bg-background/70 p-4">
+                                <div
+                                  key={`${group.title}-${index}`}
+                                  className="min-w-0 overflow-hidden rounded-3xl border border-border/70 bg-background/70 p-4"
+                                >
                                   <p className="text-sm leading-7 text-muted-foreground">{item.summary}</p>
-                                  <div className="mt-3">
+                                  <div className="mt-3 min-w-0">
                                     <EvidencePills
                                       sourceIds={item.sourceIds}
                                       sources={document.sources}
@@ -1466,14 +1442,17 @@ export function ReportExperience({
                   />
                 )}
 
-                <Card className="border-strong/70 bg-card/80 shadow-none">
+                <Card className="min-w-0 overflow-hidden border-strong/70 bg-card/80 shadow-none">
                   <CardHeader>
                     <CardTitle className="text-2xl">Fact base</CardTitle>
                   </CardHeader>
-                  <CardContent className="space-y-4">
+                  <CardContent className="min-w-0 space-y-4">
                     {document.facts.length > 0 ? (
                       document.facts.map((fact) => (
-                        <div key={fact.id} className="rounded-3xl border border-border/70 bg-background/70 p-4">
+                        <div
+                          key={fact.id}
+                          className="min-w-0 overflow-hidden rounded-3xl border border-border/70 bg-background/70 p-4"
+                        >
                           <div className="flex flex-wrap items-center gap-2">
                             <span
                               className={cn(
@@ -1495,11 +1474,11 @@ export function ReportExperience({
                             <p className="mt-2 text-sm leading-7 text-muted-foreground">{fact.rationale}</p>
                           ) : null}
                           {fact.evidenceSnippet ? (
-                            <div className="mt-3 rounded-3xl border border-border/70 bg-card/80 p-4 text-sm leading-7 text-muted-foreground">
+                            <div className="mt-3 overflow-hidden rounded-3xl border border-border/70 bg-card/80 p-4 text-sm leading-7 text-muted-foreground">
                               {fact.evidenceSnippet}
                             </div>
                           ) : null}
-                          <div className="mt-3">
+                          <div className="mt-3 min-w-0">
                             <EvidencePills
                               sourceIds={fact.sourceIds}
                               sources={document.sources}
@@ -1704,7 +1683,7 @@ export function ReportExperience({
 
         {showDesktopSourceRail ? (
           <div className="hidden xl:block">
-            <div className="sticky top-28">
+            <div className="fixed right-6 top-28 z-30 h-[calc(100vh-8rem)] w-[18rem] overflow-y-auto">
               <ReportSourcePanel
                 sources={document.sources}
                 selectedSourceIds={selectedSourceIds}
