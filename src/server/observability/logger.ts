@@ -1,5 +1,7 @@
 import "server-only";
 
+import { getDatabaseErrorDiagnostics } from "@/server/db/error-diagnostics";
+
 type LogLevel = "info" | "warn" | "error";
 
 const SENSITIVE_KEY_PATTERN = /(authorization|cookie|password|secret|token|api[_-]?key|database_url)/i;
@@ -12,12 +14,14 @@ function sanitizeValue(value: unknown, depth = 0): unknown {
 
   if (value instanceof Error) {
     const errorRecord = value as unknown as { code?: unknown; status?: unknown };
+    const databaseError = getDatabaseErrorDiagnostics(value);
 
     return {
       name: value.name,
       message: value.message,
       ...(typeof errorRecord.code === "string" ? { code: errorRecord.code } : {}),
       ...(typeof errorRecord.status === "number" ? { status: errorRecord.status } : {}),
+      ...(databaseError ? { databaseError } : {}),
     };
   }
 

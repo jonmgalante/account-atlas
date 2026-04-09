@@ -1,6 +1,7 @@
 import "server-only";
 
 import { serverEnv } from "@/env/server";
+import { logServerEvent } from "@/server/observability/logger";
 
 export type StoredBlobPointer = {
   provider: "vercel_blob";
@@ -24,20 +25,31 @@ export async function maybeStoreBlobArtifact(input: {
     return null;
   }
 
-  const { put } = await import("@vercel/blob");
-  const blob = await put(input.pathname, input.body, {
-    access: "public",
-    addRandomSuffix: false,
-    contentType: input.contentType,
-    token: serverEnv.BLOB_READ_WRITE_TOKEN,
-  });
+  try {
+    const { put } = await import("@vercel/blob");
+    const blob = await put(input.pathname, input.body, {
+      access: "public",
+      addRandomSuffix: false,
+      contentType: input.contentType,
+      token: serverEnv.BLOB_READ_WRITE_TOKEN,
+    });
 
-  return {
-    provider: "vercel_blob",
-    pathname: blob.pathname,
-    url: blob.url,
-    downloadUrl: blob.downloadUrl ?? null,
-    sizeBytes,
-    contentType: input.contentType,
-  } satisfies StoredBlobPointer;
+    return {
+      provider: "vercel_blob",
+      pathname: blob.pathname,
+      url: blob.url,
+      downloadUrl: blob.downloadUrl ?? null,
+      sizeBytes,
+      contentType: input.contentType,
+    } satisfies StoredBlobPointer;
+  } catch (error) {
+    logServerEvent("warn", "storage.blob.put_failed", {
+      pathname: input.pathname,
+      sizeBytes,
+      contentType: input.contentType,
+      error,
+    });
+
+    return null;
+  }
 }

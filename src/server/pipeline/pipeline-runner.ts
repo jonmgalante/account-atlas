@@ -84,6 +84,43 @@ function createStepHandlers(
   accountPlanService: ReturnType<typeof createAccountPlanService>,
   exportService: ReturnType<typeof createReportExportService>,
 ): Record<PipelineStepKey, StepHandler> {
+  async function runOptionalExport(input: {
+    report: StoredRunContext["report"];
+    run: StoredRunContext["run"];
+    repository: ReportRepository;
+    artifactType: "markdown" | "pdf";
+    stepKey: "export_markdown" | "export_pdf";
+    exportOperation: () => Promise<string>;
+  }) {
+    try {
+      return await input.exportOperation();
+    } catch (error) {
+      const artifactLabel = input.artifactType === "pdf" ? "PDF" : "Markdown";
+      const errorMessage = error instanceof Error ? error.message : `Unknown ${artifactLabel} export error.`;
+
+      await input.repository.appendRunEvent({
+        reportId: input.report.id,
+        runId: input.run.id,
+        level: "warning",
+        eventType: `artifact.${input.artifactType}.failed`,
+        stepKey: input.stepKey,
+        message: `${artifactLabel} export failed, but the report can still complete with the source-backed web view: ${errorMessage}`,
+        metadata: {
+          errorMessage,
+        },
+      });
+
+      logServerEvent("warn", "artifact.export.failed", {
+        shareId: input.report.shareId,
+        runId: input.run.id,
+        artifactType: input.artifactType,
+        error,
+      });
+
+      return `${artifactLabel} export failed for this run, but the report can still be shared from the web view${input.artifactType === "pdf" ? " and any available Markdown export" : ""}.`;
+    }
+  }
+
   return {
     async normalize_target({ report }) {
       return `Normalized the target URL and confirmed ${report.canonicalDomain} as the canonical domain.`;
@@ -119,36 +156,34 @@ function createStepHandlers(
       });
     },
 
-    async export_markdown({ report, run }) {
-      return exportService.generateMarkdownArtifact({
+    async export_markdown({ report, run, repository }) {
+      return runOptionalExport({
         report,
         run,
+        repository,
+        artifactType: "markdown",
+        stepKey: "export_markdown",
+        exportOperation: () =>
+          exportService.generateMarkdownArtifact({
+            report,
+            run,
+          }),
       });
     },
 
     async export_pdf({ report, run, repository }) {
-      try {
-        return await exportService.generatePdfArtifact({
-          report,
-          run,
-        });
-      } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : "Unknown PDF export error.";
-
-        await repository.appendRunEvent({
-          reportId: report.id,
-          runId: run.id,
-          level: "warning",
-          eventType: "artifact.pdf.failed",
-          stepKey: "export_pdf",
-          message: `PDF export failed, but the report can still complete with Markdown available: ${errorMessage}`,
-          metadata: {
-            errorMessage,
-          },
-        });
-
-        return "PDF export failed for this run, but the report can still be shared with the Markdown export and source-backed web view.";
-      }
+      return runOptionalExport({
+        report,
+        run,
+        repository,
+        artifactType: "pdf",
+        stepKey: "export_pdf",
+        exportOperation: () =>
+          exportService.generatePdfArtifact({
+            report,
+            run,
+          }),
+      });
     },
 
     async finalize_report({ run, repository }) {

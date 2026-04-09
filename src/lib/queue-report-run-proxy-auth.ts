@@ -30,7 +30,14 @@ export function isValidReportRunQueueProxyToken(candidate: string | null | undef
     return false;
   }
 
-  const expected = createReportRunQueueProxyToken(env);
+  let expected: string;
+
+  try {
+    expected = createReportRunQueueProxyToken(env);
+  } catch {
+    return false;
+  }
+
   const candidateBuffer = Buffer.from(candidate);
   const expectedBuffer = Buffer.from(expected);
 

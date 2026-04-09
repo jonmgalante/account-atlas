@@ -46,7 +46,7 @@ describe("createPipelineDispatcher", () => {
     expect(inlineRunner).not.toHaveBeenCalled();
   });
 
-  it("falls back to inline when queue publishing fails in auto mode", async () => {
+  it("fails fast when queue publishing fails on Vercel in auto mode", async () => {
     process.env.VERCEL = "1";
     const inlineRunner = vi.fn(async () => {});
     const queueSender = vi.fn(async () => {
@@ -57,9 +57,7 @@ describe("createPipelineDispatcher", () => {
       queueSender,
     });
 
-    const result = await dispatcher.dispatch({ runId: 33 });
-
-    expect(result.executionMode).toBe("inline");
-    expect(inlineRunner).toHaveBeenCalledWith(33);
+    await expect(dispatcher.dispatch({ runId: 33 })).rejects.toThrow("queue unavailable");
+    expect(inlineRunner).not.toHaveBeenCalled();
   });
 });

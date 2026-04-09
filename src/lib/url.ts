@@ -168,7 +168,7 @@ export function normalizeCanonicalDomain(hostname: string) {
 }
 
 export function isCompanyHostname(hostname: string, canonicalDomain: string) {
-  const normalizedHostname = hostname.toLowerCase();
+  const normalizedHostname = hostname.toLowerCase().replace(/\.$/, "");
   const normalizedDomain = normalizeCanonicalDomain(canonicalDomain);
 
   return normalizedHostname === normalizedDomain || normalizedHostname.endsWith(`.${normalizedDomain}`);

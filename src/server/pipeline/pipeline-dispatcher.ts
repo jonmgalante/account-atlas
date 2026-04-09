@@ -128,7 +128,11 @@ export function createPipelineDispatcher(dependencies: PipelineDispatcherDepende
         const queueSender = dependencies.queueSender ?? (await getQueueSender());
         return await dispatchToQueue(context.runId, queueSender);
       } catch (error) {
-        if (serverEnv.REPORT_PIPELINE_MODE === "vercel_queue") {
+        if (serverEnv.REPORT_PIPELINE_MODE === "vercel_queue" || process.env.VERCEL === "1") {
+          logServerEvent("error", "pipeline.dispatch.queue_failed", {
+            runId: context.runId,
+            error,
+          });
           throw error;
         }
 

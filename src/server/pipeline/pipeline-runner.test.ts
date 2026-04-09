@@ -524,6 +524,33 @@ describe("createReportPipelineRunner", () => {
     expect(stub.recentEvents.some((event) => event.eventType === "artifact.pdf.failed")).toBe(true);
   });
 
+  it("keeps the run shareable when Markdown export fails before PDF succeeds", async () => {
+    const stub = createRepositoryStub();
+    const runner = createReportPipelineRunner({
+      repository: stub.repository,
+      crawler: stub.crawler,
+      researchService: stub.researchService,
+      accountPlanService: stub.accountPlanService,
+      exportService: {
+        ...stub.exportService,
+        async generateMarkdownArtifact() {
+          throw new Error("Blob upload failed");
+        },
+      },
+    });
+
+    await runner.processReportRun({
+      runId: 11,
+      trigger: "inline",
+    });
+
+    expect(stub.run.status).toBe("completed");
+    expect(stub.report.status).toBe("ready");
+    expect(stub.artifacts.some((artifact) => artifact.artifactType === "markdown")).toBe(false);
+    expect(stub.artifacts.some((artifact) => artifact.artifactType === "pdf")).toBe(true);
+    expect(stub.recentEvents.some((event) => event.eventType === "artifact.markdown.failed")).toBe(true);
+  });
+
   it("keeps the run in progress when a step fails but still has retry attempts remaining", async () => {
     const stub = createRepositoryStub();
     let enrichAttempts = 0;

@@ -7,6 +7,7 @@ import { logServerEvent } from "@/server/observability/logger";
 import { reportRunQueueMessageHandler, retryReportRunQueueMessage } from "@/server/pipeline/report-run-queue-consumer";
 
 export const runtime = "nodejs";
+export const maxDuration = 300;
 
 const QUEUE_PROXY_TOKEN_HEADER = "x-account-atlas-queue-proxy-token";
 

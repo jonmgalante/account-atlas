@@ -34,7 +34,7 @@ cp .env.example .env.local
 4. Generate or apply migrations.
 
 ```bash
-pnpm db:doctor
+pnpm preflight
 pnpm db:generate
 pnpm db:migrate
 ```
@@ -81,7 +81,7 @@ See [.env.example](/Users/jongalante/Desktop/account-atlas/.env.example) for the
 ### Inline vs queue mode
 
 - `REPORT_PIPELINE_MODE=auto`
-  Uses Vercel Queues on Vercel and inline execution locally.
+  Uses Vercel Queues on Vercel and inline execution locally. On Vercel, queue publish failures are surfaced instead of falling back to unreliable inline background work.
 - `REPORT_PIPELINE_MODE=inline`
   Runs the full pipeline in-process. Best for local development.
 - `REPORT_PIPELINE_MODE=vercel_queue`
@@ -116,6 +116,7 @@ See [.env.example](/Users/jongalante/Desktop/account-atlas/.env.example) for the
 - Generated SQL migrations live in [drizzle](/Users/jongalante/Desktop/account-atlas/drizzle).
 - CLI database commands read `DATABASE_URL` from the shell first, then `.env`, then `.env.local`.
 - Use `pnpm db:doctor` to confirm the target database, key tables, and Drizzle migration state without printing secrets.
+- Use `pnpm preflight` for the same readiness check with a shorter command during local setup and deploy debugging.
 - Regenerate migration files after schema edits:
 
 ```bash
@@ -134,6 +135,7 @@ pnpm db:generate
 - Queue topic name is defined in [src/server/pipeline/pipeline-dispatcher.ts](/Users/jongalante/Desktop/account-atlas/src/server/pipeline/pipeline-dispatcher.ts).
 - [vercel.json](/Users/jongalante/Desktop/account-atlas/vercel.json) must route the queue callback correctly in deployed environments.
 - In local development, missing queue config falls back to inline execution unless queue-only mode is forced.
+- In deployed Vercel environments, `REPORT_PIPELINE_MODE=auto` still expects queue publishing to succeed; failures are logged and surfaced so the run does not appear to start when the queue is unavailable.
 
 ## Vercel Blob Setup Notes
 

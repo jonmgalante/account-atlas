@@ -258,6 +258,8 @@ export function ReportExperience({
   const accountPlan = currentRun?.accountPlan ?? null;
   const markdownArtifact = document.artifacts.find((artifact) => artifact.artifactType === "markdown") ?? null;
   const pdfArtifact = document.artifacts.find((artifact) => artifact.artifactType === "pdf") ?? null;
+  const downloadableMarkdownArtifact = markdownArtifact?.downloadPath ? markdownArtifact : null;
+  const downloadablePdfArtifact = pdfArtifact?.downloadPath ? pdfArtifact : null;
   const canShowCompletedReport = Boolean(researchSummary || accountPlan || document.sources.length > 0);
   const liveReportStatus = status?.report.status ?? document.report.status;
   const readySectionCount = document.sections.filter((section) => section.status === "ready").length;
@@ -400,9 +402,9 @@ export function ReportExperience({
                     </p>
                   </div>
                   <div className="flex flex-wrap gap-2">
-                    {markdownArtifact ? (
+                    {downloadableMarkdownArtifact ? (
                       <Button type="button" size="sm" asChild>
-                        <a href={markdownArtifact.downloadPath}>
+                        <a href={downloadableMarkdownArtifact.downloadPath ?? undefined}>
                           <Download className="h-4 w-4" />
                           Download Markdown
                         </a>
@@ -413,9 +415,9 @@ export function ReportExperience({
                         Markdown {currentRun?.status === "completed" ? "unavailable" : "pending"}
                       </Button>
                     )}
-                    {pdfArtifact ? (
+                    {downloadablePdfArtifact ? (
                       <Button type="button" size="sm" variant="outline" asChild>
-                        <a href={pdfArtifact.downloadPath}>
+                        <a href={downloadablePdfArtifact.downloadPath ?? undefined}>
                           <Download className="h-4 w-4" />
                           Download PDF
                         </a>
@@ -450,7 +452,7 @@ export function ReportExperience({
                 </div>
               </div>
 
-              {currentRun?.status === "completed" && markdownArtifact && !pdfArtifact ? (
+              {currentRun?.status === "completed" && downloadableMarkdownArtifact && !downloadablePdfArtifact ? (
                 <p className="text-sm leading-7 text-muted-foreground">
                   PDF export is unavailable for this run. The Markdown export and cited web report remain available.
                 </p>

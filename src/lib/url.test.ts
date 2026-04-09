@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { extractCanonicalDomain, safeNormalizeCompanyUrl } from "@/lib/url";
+import { extractCanonicalDomain, isCompanyHostname, safeNormalizeCompanyUrl } from "@/lib/url";
 
 describe("safeNormalizeCompanyUrl", () => {
   it("adds https when the scheme is omitted", () => {
@@ -61,5 +61,9 @@ describe("safeNormalizeCompanyUrl", () => {
 
   it("extracts a canonical domain", () => {
     expect(extractCanonicalDomain("https://www.openai.com/research")).toBe("openai.com");
+  });
+
+  it("treats trailing-dot subdomains as part of the same company domain", () => {
+    expect(isCompanyHostname("docs.openai.com.", "openai.com")).toBe(true);
   });
 });

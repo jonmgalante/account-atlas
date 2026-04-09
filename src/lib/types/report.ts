@@ -169,7 +169,7 @@ export type ReportArtifactRecord = {
   contentHash: string | null;
   createdAt: string;
   updatedAt: string;
-  downloadPath: string;
+  downloadPath: string | null;
 };
 
 export type ReportShell = {

@@ -8,6 +8,7 @@
     "build": "next build",
     "start": "next start",
     "db:doctor": "node scripts/db-doctor.mjs",
+    "preflight": "node scripts/db-doctor.mjs",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "lint": "eslint .",

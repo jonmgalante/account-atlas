@@ -154,6 +154,11 @@ function serializeArtifact(
   artifact: Awaited<ReturnType<ReportRepository["listArtifactsByRunId"]>>[number],
   shareId: string,
 ): ReportArtifactRecord {
+  const downloadPath =
+    artifact.artifactType === "markdown" || artifact.artifactType === "pdf"
+      ? createArtifactDownloadPath(shareId, artifact.artifactType)
+      : null;
+
   return {
     id: artifact.id,
     artifactType: artifact.artifactType,
@@ -163,7 +168,7 @@ function serializeArtifact(
     contentHash: artifact.contentHash,
     createdAt: artifact.createdAt.toISOString(),
     updatedAt: artifact.updatedAt.toISOString(),
-    downloadPath: createArtifactDownloadPath(shareId, artifact.artifactType),
+    downloadPath,
   };
 }
 

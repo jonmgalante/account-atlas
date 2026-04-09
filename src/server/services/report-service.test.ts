@@ -487,6 +487,36 @@ describe("createReportService", () => {
     expect(document?.result.state).toBe("partial");
   });
 
+  it("does not advertise unsupported download routes for non-export artifacts", async () => {
+    const { repository, storedArtifacts } = createRepositoryStub();
+    const service = createReportService({ repository });
+    const created = await service.createReport("example.com");
+
+    storedArtifacts.set(created.runId, [
+      {
+        id: 1,
+        reportId: 1,
+        runId: created.runId,
+        artifactType: "source_bundle",
+        mimeType: "application/json",
+        fileName: "crawl-manifest.json",
+        storagePointers: {
+          inlineJson: "{\"ok\":true}",
+        },
+        contentHash: "hash123",
+        sizeBytes: 11,
+        createdAt: new Date("2026-04-07T12:00:00.000Z"),
+        updatedAt: new Date("2026-04-07T12:00:00.000Z"),
+      },
+    ]);
+
+    const document = await service.getReportDocument(created.shareId);
+
+    expect(document?.artifacts).toHaveLength(1);
+    expect(document?.artifacts[0]?.artifactType).toBe("source_bundle");
+    expect(document?.artifacts[0]?.downloadPath).toBeNull();
+  });
+
   it("returns inline artifact downloads when Blob storage is unavailable", async () => {
     const { repository, storedArtifacts } = createRepositoryStub();
     const service = createReportService({ repository });
