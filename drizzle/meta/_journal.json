@@ -43,6 +43,13 @@
       "when": 1775609198786,
       "tag": "0005_odd_deathbird",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1775769963221,
+      "tag": "0006_natural_iron_monger",
+      "breakpoints": true
     }
   ]
 }

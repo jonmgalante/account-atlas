@@ -177,6 +177,8 @@ function formatReportStatusLabel(status: string) {
       return "Building report";
     case "ready":
       return "Ready";
+    case "ready_with_limited_coverage":
+      return "Ready with limited coverage";
     case "failed":
       return "Failed";
     default:
@@ -410,13 +412,21 @@ export function ReportExperience({
   const primaryStatusLabel = formatReportStatusLabel(liveReportStatus);
   const isBuildingReport = liveReportStatus === "queued" || liveReportStatus === "running";
   const hasResearchContent = Boolean(researchSummary || document.facts.length > 0);
-  const hasPlanningContent = Boolean(accountPlan);
+  const hasPlanningContent = Boolean(accountPlan && topOpportunity && accountPlan.overallAccountMotion.rationale);
+  const hasStakeholderContent = Boolean(accountPlan?.stakeholderHypotheses.length);
+  const hasDiscoveryContent = Boolean(
+    accountPlan && (accountPlan.objectionsAndRebuttals.length > 0 || accountPlan.discoveryQuestions.length > 0),
+  );
+  const hasPilotPlanContent = Boolean(accountPlan?.pilotPlan);
+  const hasExpansionContent = Boolean(
+    accountPlan?.expansionScenarios.low ?? accountPlan?.expansionScenarios.base ?? accountPlan?.expansionScenarios.high,
+  );
   const hasSourcesContent = document.sources.length > 0;
   const showResearchSection = !isBuildingReport || hasResearchContent;
   const showUseCasesSection = !isBuildingReport || hasPlanningContent;
-  const showStakeholdersSection = !isBuildingReport || hasPlanningContent;
-  const showPilotPlanSection = !isBuildingReport || hasPlanningContent;
-  const showExpansionSection = !isBuildingReport || hasPlanningContent;
+  const showStakeholdersSection = !isBuildingReport || hasStakeholderContent || hasDiscoveryContent;
+  const showPilotPlanSection = !isBuildingReport || hasPilotPlanContent;
+  const showExpansionSection = !isBuildingReport || hasExpansionContent;
   const showSourcesSection = !isBuildingReport || hasSourcesContent;
   const sectionStatusByKey = new Map(document.sections.map((section) => [section.key, section.status]));
   const pendingSectionTargets = compactSectionGroups
@@ -1078,7 +1088,7 @@ export function ReportExperience({
                 </ReportSection>
               ) : null}
 
-              {accountPlan ? (
+              {accountPlan && (accountPlan.stakeholderHypotheses.length > 0 || hasDiscoveryContent) ? (
                 <ReportSection
                   id="stakeholders"
                   eyebrow="Brief"
@@ -1086,82 +1096,90 @@ export function ReportExperience({
                   description="Use these stakeholder hypotheses, objections, and discovery prompts to shape the deal."
                 >
                   <div className="space-y-4">
-                    <div className="grid gap-4 xl:grid-cols-3">
-                      {accountPlan.stakeholderHypotheses.map((stakeholder) => (
-                        <Card
-                          key={`${stakeholder.likelyRole}-${stakeholder.hypothesis}`}
-                          className="border-strong/70 bg-card/80 shadow-none"
-                        >
-                          <CardHeader className="space-y-2">
-                            <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">
-                              {stakeholder.department ?? "Cross-functional"}
-                            </div>
-                            <CardTitle className="text-xl">{stakeholder.likelyRole}</CardTitle>
-                          </CardHeader>
-                          <CardContent className="space-y-3 text-sm leading-7 text-muted-foreground">
-                            <p>{stakeholder.hypothesis}</p>
-                            <p>{stakeholder.rationale}</p>
-                            <Badge variant="outline" className="rounded-full px-3 py-1">
-                              {stakeholder.confidence}/100 confidence
-                            </Badge>
-                            <EvidencePills
-                              sourceIds={stakeholder.evidenceSourceIds}
-                              sources={document.sources}
-                              onSelectSources={handleSelectSources}
-                            />
-                          </CardContent>
-                        </Card>
-                      ))}
-                    </div>
-
-                    <div className="grid gap-4 lg:grid-cols-2">
-                      <Card className="border-strong/70 bg-card/80 shadow-none">
-                        <CardHeader>
-                          <CardTitle className="text-xl">Likely objections</CardTitle>
-                        </CardHeader>
-                        <CardContent className="space-y-4">
-                          {accountPlan.objectionsAndRebuttals.map((item) => (
-                            <div key={item.objection} className="rounded-3xl border border-border/70 bg-background/70 p-4">
-                              <div className="font-medium text-foreground">{item.objection}</div>
-                              <p className="mt-2 text-sm leading-7 text-muted-foreground">{item.rebuttal}</p>
-                              <div className="mt-3">
-                                <EvidencePills
-                                  sourceIds={item.evidenceSourceIds}
-                                  sources={document.sources}
-                                  onSelectSources={handleSelectSources}
-                                />
+                    {accountPlan.stakeholderHypotheses.length > 0 ? (
+                      <div className="grid gap-4 xl:grid-cols-3">
+                        {accountPlan.stakeholderHypotheses.map((stakeholder) => (
+                          <Card
+                            key={`${stakeholder.likelyRole}-${stakeholder.hypothesis}`}
+                            className="border-strong/70 bg-card/80 shadow-none"
+                          >
+                            <CardHeader className="space-y-2">
+                              <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">
+                                {stakeholder.department ?? "Cross-functional"}
                               </div>
-                            </div>
-                          ))}
-                        </CardContent>
-                      </Card>
+                              <CardTitle className="text-xl">{stakeholder.likelyRole}</CardTitle>
+                            </CardHeader>
+                            <CardContent className="space-y-3 text-sm leading-7 text-muted-foreground">
+                              <p>{stakeholder.hypothesis}</p>
+                              <p>{stakeholder.rationale}</p>
+                              <Badge variant="outline" className="rounded-full px-3 py-1">
+                                {stakeholder.confidence}/100 confidence
+                              </Badge>
+                              <EvidencePills
+                                sourceIds={stakeholder.evidenceSourceIds}
+                                sources={document.sources}
+                                onSelectSources={handleSelectSources}
+                              />
+                            </CardContent>
+                          </Card>
+                        ))}
+                      </div>
+                    ) : null}
 
-                      <Card className="border-strong/70 bg-card/80 shadow-none">
-                        <CardHeader>
-                          <CardTitle className="text-xl">Discovery questions</CardTitle>
-                        </CardHeader>
-                        <CardContent className="space-y-4">
-                          {accountPlan.discoveryQuestions.map((item) => (
-                            <div key={item.question} className="rounded-3xl border border-border/70 bg-background/70 p-4">
-                              <div className="font-medium text-foreground">{item.question}</div>
-                              <p className="mt-2 text-sm leading-7 text-muted-foreground">{item.whyItMatters}</p>
-                              <div className="mt-3">
-                                <EvidencePills
-                                  sourceIds={item.evidenceSourceIds}
-                                  sources={document.sources}
-                                  onSelectSources={handleSelectSources}
-                                />
-                              </div>
-                            </div>
-                          ))}
-                        </CardContent>
-                      </Card>
-                    </div>
+                    {hasDiscoveryContent ? (
+                      <div className="grid gap-4 lg:grid-cols-2">
+                        {accountPlan.objectionsAndRebuttals.length > 0 ? (
+                          <Card className="border-strong/70 bg-card/80 shadow-none">
+                            <CardHeader>
+                              <CardTitle className="text-xl">Likely objections</CardTitle>
+                            </CardHeader>
+                            <CardContent className="space-y-4">
+                              {accountPlan.objectionsAndRebuttals.map((item) => (
+                                <div key={item.objection} className="rounded-3xl border border-border/70 bg-background/70 p-4">
+                                  <div className="font-medium text-foreground">{item.objection}</div>
+                                  <p className="mt-2 text-sm leading-7 text-muted-foreground">{item.rebuttal}</p>
+                                  <div className="mt-3">
+                                    <EvidencePills
+                                      sourceIds={item.evidenceSourceIds}
+                                      sources={document.sources}
+                                      onSelectSources={handleSelectSources}
+                                    />
+                                  </div>
+                                </div>
+                              ))}
+                            </CardContent>
+                          </Card>
+                        ) : null}
+
+                        {accountPlan.discoveryQuestions.length > 0 ? (
+                          <Card className="border-strong/70 bg-card/80 shadow-none">
+                            <CardHeader>
+                              <CardTitle className="text-xl">Discovery questions</CardTitle>
+                            </CardHeader>
+                            <CardContent className="space-y-4">
+                              {accountPlan.discoveryQuestions.map((item) => (
+                                <div key={item.question} className="rounded-3xl border border-border/70 bg-background/70 p-4">
+                                  <div className="font-medium text-foreground">{item.question}</div>
+                                  <p className="mt-2 text-sm leading-7 text-muted-foreground">{item.whyItMatters}</p>
+                                  <div className="mt-3">
+                                    <EvidencePills
+                                      sourceIds={item.evidenceSourceIds}
+                                      sources={document.sources}
+                                      onSelectSources={handleSelectSources}
+                                    />
+                                  </div>
+                                </div>
+                              ))}
+                            </CardContent>
+                          </Card>
+                        ) : null}
+                      </div>
+                    ) : null}
                   </div>
                 </ReportSection>
               ) : null}
 
-              {accountPlan ? (
+              {accountPlan?.pilotPlan ? (
                 <ReportSection
                   id="pilot-plan"
                   eyebrow="Brief"
@@ -1172,7 +1190,7 @@ export function ReportExperience({
                     <Card className="border-strong/70 bg-card/85 shadow-panel">
                       <CardHeader className="space-y-3">
                         <div className="flex flex-wrap items-center justify-between gap-3">
-                          <CardTitle className="text-2xl">Pilot recommendation</CardTitle>
+                            <CardTitle className="text-2xl">Pilot recommendation</CardTitle>
                           <Badge variant="secondary" className="rounded-full px-3 py-1">
                             {formatMotionLabel(accountPlan.pilotPlan.recommendedMotion)}
                           </Badge>
@@ -1255,7 +1273,7 @@ export function ReportExperience({
                 </ReportSection>
               ) : null}
 
-              {accountPlan ? (
+              {accountPlan && hasExpansionContent ? (
                 <details
                   id="expansion-scenarios"
                   open={isExpansionOpen}
@@ -1277,7 +1295,12 @@ export function ReportExperience({
                         { label: "Low case", scenario: accountPlan.expansionScenarios.low },
                         { label: "Base case", scenario: accountPlan.expansionScenarios.base },
                         { label: "High case", scenario: accountPlan.expansionScenarios.high },
-                      ].map(({ label, scenario }) => (
+                      ]
+                        .filter(
+                          (item): item is { label: string; scenario: NonNullable<typeof item.scenario> } =>
+                            item.scenario !== null,
+                        )
+                        .map(({ label, scenario }) => (
                         <Card key={label} className="border-strong/70 bg-card/80 shadow-none">
                           <CardHeader>
                             <CardTitle className="text-xl">{label}</CardTitle>

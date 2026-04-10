@@ -1,0 +1,1 @@
+ALTER TYPE "public"."report_status" ADD VALUE 'ready_with_limited_coverage' BEFORE 'failed';

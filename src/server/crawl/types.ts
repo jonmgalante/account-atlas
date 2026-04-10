@@ -24,6 +24,7 @@ export type ParsedHtmlDocument = {
   canonicalUrl: string;
   markdownContent: string | null;
   textContent: string | null;
+  parsingStrategy: "full" | "fallback";
   publishedAt: Date | null;
   updatedAtHint: Date | null;
   links: DiscoveredLink[];
@@ -34,6 +35,8 @@ export type FetchCompanyResourceResult = {
   status: number;
   mimeType: string | null;
   buffer: Buffer;
+  truncated: boolean;
+  declaredContentLength: number | null;
   retrievedAt: Date;
 };
 
@@ -45,6 +48,9 @@ export type CrawlIngestionResult = {
   pdfSourcesStored: number;
   dedupedSources: number;
   sourceIds: number[];
+  coverageStatus: "broad" | "limited" | "minimal";
+  fallbackPlanApplied: "shallow_first_party" | "public_web_enrichment" | null;
+  limitations: string[];
   manifest: {
     visitedUrls: string[];
     pdfUrls: string[];

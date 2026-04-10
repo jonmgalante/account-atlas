@@ -4,10 +4,18 @@ import { createHash } from "node:crypto";
 
 import type {
   AccountPlanUseCase,
+  DiscoveryQuestion,
   ExpansionScenario,
   FinalAccountPlan,
+  ObjectionAndRebuttal,
+  PilotPlan,
   StakeholderHypothesis,
 } from "@/lib/types/account-plan";
+import {
+  evaluateSellerFacingReport,
+  formatMinimumViableRequirement,
+  formatOptionalCoverageGap,
+} from "@/lib/report-completion";
 import type { PersistedFact, PersistedSource, ReportRepository, StoredRunContext, UpsertArtifactInput } from "@/server/repositories/report-repository";
 import { drizzleReportRepository } from "@/server/repositories/report-repository";
 import { maybeStoreBlobArtifact } from "@/server/storage/blob-store";
@@ -18,6 +26,7 @@ import {
   type ParsedStructuredResponse,
 } from "@/server/openai/client";
 import { logServerEvent } from "@/server/observability/logger";
+import { recordPipelineEvent } from "@/server/pipeline/pipeline-observability";
 import { createResearchPipelineService } from "@/server/research/research-service";
 import { buildSourceRegistry } from "@/server/research/source-registry";
 import { normalizeUseCaseScorecard, rankAccountPlanUseCases } from "@/server/account-plan/scoring";
@@ -129,7 +138,7 @@ function buildCandidateUseCasePrompt(
       riskPenalty: "Security, compliance, change-management, or implementation risk that should reduce priority.",
     },
     requirements: {
-      useCaseCount: "Return between 12 and 15 candidate use cases.",
+      useCaseCount: "Prefer 12 to 15 candidate use cases, but return at least 3 evidence-backed options when public evidence is thin.",
       evidenceRule: "Every use case must cite one or more valid source IDs from the source registry.",
       tone: "Prefer practical, measurable use cases first. Keep uncertainty explicit when evidence is thin.",
     },
@@ -308,7 +317,7 @@ function sanitizeCandidateUseCases(
     });
   }
 
-  if (normalized.length < 12 || normalized.length > 15) {
+  if (normalized.length < 3 || normalized.length > 15) {
     throw new Error(`Account-plan candidate generation returned ${normalized.length} valid use cases after validation.`);
   }
 
@@ -343,7 +352,77 @@ function sanitizeStakeholderHypotheses(
   return normalized;
 }
 
-function sanitizeExpansionScenario(scenario: ExpansionScenario, validSourceIds: Set<number>): ExpansionScenario {
+function sanitizeObjectionsAndRebuttals(
+  objections: ObjectionAndRebuttal[],
+  validSourceIds: Set<number>,
+) {
+  return objections
+    .map((item) => ({
+      objection: item.objection.trim(),
+      rebuttal: item.rebuttal.trim(),
+      evidenceSourceIds: sanitizeSourceIds(item.evidenceSourceIds, validSourceIds),
+    }))
+    .filter((item) => item.objection && item.rebuttal && item.evidenceSourceIds.length > 0);
+}
+
+function sanitizeDiscoveryQuestions(
+  questions: DiscoveryQuestion[],
+  validSourceIds: Set<number>,
+) {
+  return questions
+    .map((item) => ({
+      question: item.question.trim(),
+      whyItMatters: item.whyItMatters.trim(),
+      evidenceSourceIds: sanitizeSourceIds(item.evidenceSourceIds, validSourceIds),
+    }))
+    .filter((item) => item.question && item.whyItMatters && item.evidenceSourceIds.length > 0);
+}
+
+function sanitizePilotPlan(
+  pilotPlan: AccountPlanNarrativeOutput["pilotPlan"],
+  validSourceIds: Set<number>,
+): PilotPlan | null {
+  if (!pilotPlan) {
+    return null;
+  }
+
+  const normalizedPilotPlan = {
+    objective: pilotPlan.objective.trim(),
+    recommendedMotion: pilotPlan.recommendedMotion,
+    scope: pilotPlan.scope.trim(),
+    successMetrics: normalizeStringArray(pilotPlan.successMetrics),
+    phases: pilotPlan.phases.map((phase) => ({
+      name: phase.name.trim(),
+      duration: phase.duration.trim(),
+      goals: normalizeStringArray(phase.goals),
+      deliverables: normalizeStringArray(phase.deliverables),
+    })),
+    dependencies: normalizeStringArray(pilotPlan.dependencies),
+    risks: normalizeStringArray(pilotPlan.risks),
+    evidenceSourceIds: sanitizeSourceIds(pilotPlan.evidenceSourceIds, validSourceIds),
+  };
+
+  if (
+    !normalizedPilotPlan.objective ||
+    !normalizedPilotPlan.scope ||
+    normalizedPilotPlan.successMetrics.length < 2 ||
+    normalizedPilotPlan.phases.length < 3 ||
+    !normalizedPilotPlan.evidenceSourceIds.length
+  ) {
+    return null;
+  }
+
+  return normalizedPilotPlan;
+}
+
+function sanitizeExpansionScenario(
+  scenario: ExpansionScenario | null,
+  validSourceIds: Set<number>,
+): ExpansionScenario | null {
+  if (!scenario) {
+    return null;
+  }
+
   const normalizedScenario = {
     summary: scenario.summary.trim(),
     assumptions: normalizeStringArray(scenario.assumptions),
@@ -357,7 +436,7 @@ function sanitizeExpansionScenario(scenario: ExpansionScenario, validSourceIds: 
     !normalizedScenario.expectedOutcomes.length ||
     !normalizedScenario.evidenceSourceIds.length
   ) {
-    throw new Error("Account-plan expansion scenarios returned invalid evidence references.");
+    return null;
   }
 
   return normalizedScenario;
@@ -377,54 +456,12 @@ function sanitizeAccountPlanNarrative(
     throw new Error("Account-plan motion recommendation did not keep valid evidence references.");
   }
 
-  const objectionsAndRebuttals = narrative.objectionsAndRebuttals
-    .map((item) => ({
-      objection: item.objection.trim(),
-      rebuttal: item.rebuttal.trim(),
-      evidenceSourceIds: sanitizeSourceIds(item.evidenceSourceIds, validSourceIds),
-    }))
-    .filter((item) => item.objection && item.rebuttal && item.evidenceSourceIds.length > 0);
+  const objectionsAndRebuttals = sanitizeObjectionsAndRebuttals(narrative.objectionsAndRebuttals, validSourceIds);
+  const discoveryQuestions = sanitizeDiscoveryQuestions(narrative.discoveryQuestions, validSourceIds);
+  const pilotPlan = sanitizePilotPlan(narrative.pilotPlan, validSourceIds);
 
-  const discoveryQuestions = narrative.discoveryQuestions
-    .map((item) => ({
-      question: item.question.trim(),
-      whyItMatters: item.whyItMatters.trim(),
-      evidenceSourceIds: sanitizeSourceIds(item.evidenceSourceIds, validSourceIds),
-    }))
-    .filter((item) => item.question && item.whyItMatters && item.evidenceSourceIds.length > 0);
-
-  const pilotPlan = {
-    objective: narrative.pilotPlan.objective.trim(),
-    recommendedMotion: narrative.pilotPlan.recommendedMotion,
-    scope: narrative.pilotPlan.scope.trim(),
-    successMetrics: normalizeStringArray(narrative.pilotPlan.successMetrics),
-    phases: narrative.pilotPlan.phases.map((phase) => ({
-      name: phase.name.trim(),
-      duration: phase.duration.trim(),
-      goals: normalizeStringArray(phase.goals),
-      deliverables: normalizeStringArray(phase.deliverables),
-    })),
-    dependencies: normalizeStringArray(narrative.pilotPlan.dependencies),
-    risks: normalizeStringArray(narrative.pilotPlan.risks),
-    evidenceSourceIds: sanitizeSourceIds(narrative.pilotPlan.evidenceSourceIds, validSourceIds),
-  };
-
-  if (
-    !pilotPlan.objective ||
-    !pilotPlan.scope ||
-    pilotPlan.successMetrics.length < 2 ||
-    pilotPlan.phases.length < 3 ||
-    !pilotPlan.evidenceSourceIds.length
-  ) {
-    throw new Error("Account-plan pilot plan returned invalid evidence references or missing required content.");
-  }
-
-  if (objectionsAndRebuttals.length < 4) {
-    throw new Error("Account-plan objections synthesis returned too few valid objection entries.");
-  }
-
-  if (discoveryQuestions.length < 6) {
-    throw new Error("Account-plan discovery question synthesis returned too few valid questions.");
+  if (!discoveryQuestions.length && !pilotPlan) {
+    throw new Error("Account-plan synthesis must persist discovery questions or a pilot framing.");
   }
 
   return {
@@ -534,6 +571,12 @@ export function createAccountPlanService(dependencies: AccountPlanServiceDepende
         throw new Error("Account-plan synthesis requires at least three valid use cases after ranking.");
       }
 
+      await repository.replaceUseCasesForRun({
+        reportId: workingContext.report.id,
+        runId: workingContext.run.id,
+        useCases: rankedUseCases,
+      });
+
       const narrativeInput = buildAccountPlanNarrativePrompt(workingContext, sources, facts, researchSummary, rankedUseCases);
 
       logServerEvent("info", "account_plan.openai.requested", {
@@ -579,12 +622,6 @@ export function createAccountPlanService(dependencies: AccountPlanServiceDepende
         expansionScenarios: narrative.expansionScenarios,
       };
 
-      await repository.replaceUseCasesForRun({
-        reportId: workingContext.report.id,
-        runId: workingContext.run.id,
-        useCases: rankedUseCases,
-      });
-
       await repository.replaceStakeholdersForRun({
         reportId: workingContext.report.id,
         runId: workingContext.run.id,
@@ -597,18 +634,73 @@ export function createAccountPlanService(dependencies: AccountPlanServiceDepende
         accountPlan,
       });
 
-      await maybeWriteAccountPlanArtifact(
-        workingContext,
-        repository,
-        buildAccountPlanArtifactBundle({
-          reportId: workingContext.report.id,
-          runId: workingContext.run.id,
-          accountPlan,
-          researchSummary,
-          facts,
-          sources,
-        }),
-      );
+      const contract = evaluateSellerFacingReport({
+        researchSummary,
+        accountPlan,
+      });
+
+      if (!contract.isSatisfied) {
+        throw new Error(
+          `Persisted account plan did not satisfy the minimum viable seller-facing contract: ${contract.missingRequirements.map(formatMinimumViableRequirement).join(", ")}.`,
+        );
+      }
+
+      let artifactFallbackApplied = false;
+
+      try {
+        await maybeWriteAccountPlanArtifact(
+          workingContext,
+          repository,
+          buildAccountPlanArtifactBundle({
+            reportId: workingContext.report.id,
+            runId: workingContext.run.id,
+            accountPlan,
+            researchSummary,
+            facts,
+            sources,
+          }),
+        );
+      } catch (error) {
+        artifactFallbackApplied = true;
+
+        const errorMessage = error instanceof Error ? error.message : "Unknown artifact persistence error.";
+
+        await recordPipelineEvent({
+          repository,
+          context: workingContext,
+          level: "warning",
+          eventType: "fallback_applied",
+          stepKey: "generate_account_plan",
+          message: `Structured account-plan artifact persistence failed, but the web report remains usable: ${errorMessage}`,
+          metadata: {
+            fallbackType: "structured_account_plan_artifact",
+            errorMessage,
+          },
+        });
+      }
+
+      const optionalGapKeys = [...contract.optionalGapKeys];
+      const limitedCoverageAreas: string[] = [...optionalGapKeys.map(formatOptionalCoverageGap)];
+
+      if (artifactFallbackApplied) {
+        limitedCoverageAreas.push("structured JSON artifact");
+      }
+
+      if (limitedCoverageAreas.length > 0) {
+        await recordPipelineEvent({
+          repository,
+          context: workingContext,
+          level: "warning",
+          eventType: "fallback_applied",
+          stepKey: "generate_account_plan",
+          message: `Core seller-facing sections were persisted, but optional coverage remained limited in ${limitedCoverageAreas.join(", ")}.`,
+          metadata: {
+            optionalGapKeys,
+            artifactFallbackApplied,
+            candidateUseCaseCount: rankedUseCases.length,
+          },
+        });
+      }
 
       await repository.appendRunEvent({
         reportId: workingContext.report.id,
@@ -619,6 +711,7 @@ export function createAccountPlanService(dependencies: AccountPlanServiceDepende
         message: `Stored an account plan with ${rankedUseCases.length} candidate use cases and ${topUseCases.length} prioritized recommendations.`,
         metadata: {
           overallMotion: accountPlan.overallAccountMotion.recommendedMotion,
+          optionalGapKeys,
           topUseCases: topUseCases.map((useCase) => ({
             priorityRank: useCase.priorityRank,
             department: useCase.department,
@@ -628,7 +721,9 @@ export function createAccountPlanService(dependencies: AccountPlanServiceDepende
         },
       });
 
-      return `Generated an account plan with ${rankedUseCases.length} candidate use cases. Overall motion: ${accountPlan.overallAccountMotion.recommendedMotion}.`;
+      return limitedCoverageAreas.length > 0
+        ? `Generated a usable account plan with ${rankedUseCases.length} candidate use cases. Overall motion: ${accountPlan.overallAccountMotion.recommendedMotion}. Optional coverage remained limited in ${limitedCoverageAreas.join(", ")}.`
+        : `Generated an account plan with ${rankedUseCases.length} candidate use cases. Overall motion: ${accountPlan.overallAccountMotion.recommendedMotion}.`;
     },
   };
 }

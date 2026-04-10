@@ -81,8 +81,19 @@ export async function assertPublicCompanyUrl(rawUrl: string, canonicalDomain?: s
 async function readResponseBuffer(response: Response, maxBytes: number) {
   const contentLengthHeader = response.headers.get("content-length");
   const declaredLength = contentLengthHeader ? Number(contentLengthHeader) : null;
+  const mimeType = response.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase() ?? null;
+  const allowTruncation =
+    mimeType === null ||
+    mimeType.includes("text/html") ||
+    mimeType.includes("application/xhtml+xml") ||
+    mimeType.startsWith("text/");
 
-  if (declaredLength && Number.isFinite(declaredLength) && declaredLength > maxBytes) {
+  if (
+    declaredLength &&
+    Number.isFinite(declaredLength) &&
+    declaredLength > maxBytes &&
+    !allowTruncation
+  ) {
     throw new PipelineStepError(
       "CRAWL_RESPONSE_TOO_LARGE",
       `Skipping ${response.url} because it exceeded the crawl response budget.`,
@@ -90,7 +101,11 @@ async function readResponseBuffer(response: Response, maxBytes: number) {
   }
 
   if (!response.body) {
-    return Buffer.alloc(0);
+    return {
+      buffer: Buffer.alloc(0),
+      truncated: false,
+      declaredContentLength: Number.isFinite(declaredLength) ? declaredLength : null,
+    };
   }
 
   const reader = response.body.getReader();
@@ -101,20 +116,57 @@ async function readResponseBuffer(response: Response, maxBytes: number) {
     const { done, value } = await reader.read();
 
     if (done) {
-      break;
+      return {
+        buffer: Buffer.concat(chunks),
+        truncated: false,
+        declaredContentLength: Number.isFinite(declaredLength) ? declaredLength : null,
+      };
     }
 
     const chunk = Buffer.from(value);
-    totalBytes += chunk.length;
 
-    if (totalBytes > maxBytes) {
-      throw new PipelineStepError("CRAWL_RESPONSE_TOO_LARGE", `Skipping ${response.url} because it exceeded the crawl response budget.`);
+    if (totalBytes + chunk.length > maxBytes) {
+      if (!allowTruncation) {
+        throw new PipelineStepError(
+          "CRAWL_RESPONSE_TOO_LARGE",
+          `Skipping ${response.url} because it exceeded the crawl response budget.`,
+        );
+      }
+
+      const remainingBytes = Math.max(0, maxBytes - totalBytes);
+
+      if (remainingBytes > 0) {
+        chunks.push(chunk.subarray(0, remainingBytes));
+      }
+
+      await reader.cancel();
+
+      return {
+        buffer: Buffer.concat(chunks),
+        truncated: true,
+        declaredContentLength: Number.isFinite(declaredLength) ? declaredLength : null,
+      };
     }
 
+    totalBytes += chunk.length;
     chunks.push(chunk);
   }
+}
 
-  return Buffer.concat(chunks);
+async function readCompanyResponse(response: Response, maxBytes: number) {
+  const contentLengthHeader = response.headers.get("content-length");
+  const declaredLength = contentLengthHeader ? Number(contentLengthHeader) : null;
+  const mimeType = response.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase() ?? null;
+  const { buffer, truncated, declaredContentLength } = await readResponseBuffer(response, maxBytes);
+
+  return {
+    finalUrl: response.url || "",
+    status: response.status,
+    mimeType,
+    buffer,
+    truncated,
+    declaredContentLength: declaredContentLength ?? (Number.isFinite(declaredLength) ? declaredLength : null),
+  };
 }
 
 export async function fetchCompanyResource(input: {
@@ -167,16 +219,17 @@ export async function fetchCompanyResource(input: {
             throw new PipelineStepError(errorCode, `Failed to fetch ${safeUrl} (HTTP ${response.status}).`);
           }
 
-          const buffer = await readResponseBuffer(response, input.maxBytes);
-          const mimeType = response.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase() ?? null;
+          const responsePayload = await readCompanyResponse(response, input.maxBytes);
 
           return {
             kind: "response" as const,
             response: {
-              finalUrl: response.url || safeUrl,
-              status: response.status,
-              mimeType,
-              buffer,
+              finalUrl: responsePayload.finalUrl || safeUrl,
+              status: responsePayload.status,
+              mimeType: responsePayload.mimeType,
+              buffer: responsePayload.buffer,
+              truncated: responsePayload.truncated,
+              declaredContentLength: responsePayload.declaredContentLength,
               retrievedAt,
             } satisfies FetchCompanyResourceResult,
           };

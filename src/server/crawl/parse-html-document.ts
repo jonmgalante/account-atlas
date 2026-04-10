@@ -94,42 +94,87 @@ function extractDateHints($: ReturnType<typeof load>) {
   };
 }
 
+function extractLinks($: ReturnType<typeof load>) {
+  return $("a[href]")
+    .map((_, element) => ({
+      url: $(element).attr("href") ?? "",
+      anchorText: normalizeText($(element).text()),
+    }))
+    .get()
+    .filter((link) => link.url);
+}
+
+function buildFallbackDocument($: ReturnType<typeof load>, input: { html: string; finalUrl: string; canonicalDomain: string }) {
+  const contentHtml = $("main").html() ?? $("body").html() ?? input.html;
+  let markdownContent: string | null = null;
+
+  try {
+    markdownContent = normalizeMarkdown(contentHtml ? turndownService.turndown(contentHtml) : null);
+  } catch {
+    markdownContent = normalizeText($("body").text()) ?? null;
+  }
+
+  return {
+    title:
+      $("meta[property='og:title']").attr("content")?.trim() ||
+      $("title").text().trim() ||
+      new URL(input.finalUrl).hostname,
+    canonicalUrl: extractCanonicalUrl($, input.finalUrl, input.canonicalDomain),
+    markdownContent,
+    textContent: normalizeText($("body").text()),
+    parsingStrategy: "fallback" as const,
+    links: extractLinks($),
+    ...extractDateHints($),
+  };
+}
+
 export function parseHtmlDocument(input: {
   html: string;
   finalUrl: string;
   canonicalDomain: string;
 }): ParsedHtmlDocument {
   const $ = load(input.html);
-  const dom = new JSDOM(input.html, {
-    url: input.finalUrl,
-  });
+  let dom: JSDOM | null = null;
 
   try {
-    const readability = new Readability(dom.window.document);
-    const article = readability.parse();
+    dom = new JSDOM(input.html, {
+      url: input.finalUrl,
+    });
+
+    let article: ReturnType<Readability["parse"]> | null = null;
+
+    try {
+      const readability = new Readability(dom.window.document);
+      article = readability.parse();
+    } catch {
+      return buildFallbackDocument($, input);
+    }
+
     const contentHtml = article?.content ?? $("main").html() ?? $("body").html() ?? "";
-    const markdownContent = normalizeMarkdown(contentHtml ? turndownService.turndown(contentHtml) : null);
+    let markdownContent: string | null = null;
+
+    try {
+      markdownContent = normalizeMarkdown(contentHtml ? turndownService.turndown(contentHtml) : null);
+    } catch {
+      return buildFallbackDocument($, input);
+    }
+
     const textContent = normalizeText(article?.textContent ?? $("body").text());
     const title =
       article?.title?.trim() || $("meta[property='og:title']").attr("content")?.trim() || $("title").text().trim() || null;
-
-    const links = $("a[href]")
-      .map((_, element) => ({
-        url: $(element).attr("href") ?? "",
-        anchorText: normalizeText($(element).text()),
-      }))
-      .get()
-      .filter((link) => link.url);
 
     return {
       title,
       canonicalUrl: extractCanonicalUrl($, input.finalUrl, input.canonicalDomain),
       markdownContent,
       textContent,
-      links,
+      parsingStrategy: "full",
+      links: extractLinks($),
       ...extractDateHints($),
     };
+  } catch {
+    return buildFallbackDocument($, input);
   } finally {
-    dom.window.close();
+    dom?.window.close();
   }
 }

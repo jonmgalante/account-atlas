@@ -8,6 +8,124 @@ import type {
 import { createReportService } from "@/server/services/report-service";
 import { createInitialPipelineState } from "@/server/pipeline/pipeline-steps";
 
+function createMinimalAccountPlan() {
+  return {
+    overallAccountMotion: {
+      recommendedMotion: "workspace" as const,
+      rationale: "The strongest visible workflows are knowledge-heavy and can start without deep integration.",
+      evidenceSourceIds: [1],
+    },
+    candidateUseCases: [
+      {
+        priorityRank: 1,
+        department: "sales" as const,
+        workflowName: "Account research copilot",
+        summary: "Prepare sellers with account context before discovery.",
+        painPoint: "Reps lose time gathering fragmented company context.",
+        whyNow: "Public materials show enough signal to prioritize a seller workflow.",
+        likelyUsers: ["Account executives"],
+        expectedOutcome: "Faster prep and stronger discovery quality.",
+        metrics: ["Prep time"],
+        dependencies: ["Sales content owners"],
+        securityComplianceNotes: [],
+        recommendedMotion: "workspace" as const,
+        motionRationale: "Knowledge-heavy workflow with light integration needs.",
+        evidenceSourceIds: [1],
+        openQuestions: ["Where is the latest account brief assembled today?"],
+        scorecard: {
+          businessValue: 88,
+          deploymentReadiness: 82,
+          expansionPotential: 80,
+          openaiFit: 90,
+          sponsorLikelihood: 78,
+          evidenceConfidence: 79,
+          riskPenalty: 12,
+          priorityScore: 81.9,
+        },
+      },
+      {
+        priorityRank: 2,
+        department: "customer_support" as const,
+        workflowName: "Support triage assistant",
+        summary: "Summarize and route incoming issues.",
+        painPoint: "Teams lose time triaging repetitive inbound tickets.",
+        whyNow: "Support scale and trust requirements are visible publicly.",
+        likelyUsers: ["Support leads"],
+        expectedOutcome: "Faster routing and clearer issue handling.",
+        metrics: ["First response time"],
+        dependencies: ["Knowledge base owners"],
+        securityComplianceNotes: [],
+        recommendedMotion: "hybrid" as const,
+        motionRationale: "Requires knowledge access plus workflow hooks.",
+        evidenceSourceIds: [1],
+        openQuestions: ["Which systems own routing rules today?"],
+        scorecard: {
+          businessValue: 82,
+          deploymentReadiness: 78,
+          expansionPotential: 79,
+          openaiFit: 83,
+          sponsorLikelihood: 75,
+          evidenceConfidence: 74,
+          riskPenalty: 14,
+          priorityScore: 77.5,
+        },
+      },
+      {
+        priorityRank: 3,
+        department: "engineering" as const,
+        workflowName: "Developer documentation assistant",
+        summary: "Improve access to platform guidance and trust docs.",
+        painPoint: "Engineers lose time searching fragmented documentation.",
+        whyNow: "Platform positioning is explicit in public sources.",
+        likelyUsers: ["Developers"],
+        expectedOutcome: "Faster implementation cycles.",
+        metrics: ["Time to resolve documentation questions"],
+        dependencies: ["Current docs corpus"],
+        securityComplianceNotes: [],
+        recommendedMotion: "workspace" as const,
+        motionRationale: "Documentation-heavy workflow fits workspace-first adoption.",
+        evidenceSourceIds: [1],
+        openQuestions: ["How current is the internal docs corpus?"],
+        scorecard: {
+          businessValue: 79,
+          deploymentReadiness: 80,
+          expansionPotential: 77,
+          openaiFit: 84,
+          sponsorLikelihood: 71,
+          evidenceConfidence: 73,
+          riskPenalty: 10,
+          priorityScore: 76.9,
+        },
+      },
+    ],
+    topUseCases: [],
+    stakeholderHypotheses: [
+      {
+        likelyRole: "Revenue Operations lead",
+        department: "sales",
+        hypothesis: "Likely sponsor for seller workflow acceleration.",
+        rationale: "Commercial workflow efficiency is central to the visible use cases.",
+        confidence: 76,
+        evidenceSourceIds: [1],
+      },
+    ],
+    objectionsAndRebuttals: [],
+    discoveryQuestions: [
+      {
+        question: "Which workflow has the strongest business owner today?",
+        whyItMatters: "A pilot needs a clear operational owner to move quickly.",
+        evidenceSourceIds: [1],
+      },
+    ],
+    pilotPlan: null,
+    expansionScenarios: {
+      low: null,
+      base: null,
+      high: null,
+    },
+  };
+}
+
 function createRepositoryStub() {
   const storedReports = new Map<string, StoredReportShell>();
   const unavailableShareIds = new Set<string>();
@@ -157,6 +275,14 @@ function createRepositoryStub() {
       throw new Error("Not needed in this test");
     },
 
+    async claimRunStepExecution() {
+      throw new Error("Not needed in this test");
+    },
+
+    async touchRunHeartbeat() {
+      return;
+    },
+
     async appendRunEvent({ runId, level, eventType, message }) {
       for (const entry of storedReports.values()) {
         if (entry.currentRun?.id === runId) {
@@ -304,6 +430,79 @@ describe("createReportService", () => {
     expect(reused.shareId).toBe(created.shareId);
   });
 
+  it("treats ready_with_limited_coverage as a reusable terminal report", async () => {
+    const { repository, storedReports } = createRepositoryStub();
+    const service = createReportService({
+      repository,
+      shareIdGenerator: () => "atlas12345",
+      dispatcher: {
+        resolvePreferredExecutionMode: () => "inline",
+        dispatch: async () => ({
+          executionMode: "inline",
+          queueMessageId: null,
+          statusMessage: "Report run started inline for local development.",
+        }),
+      },
+    });
+
+    const created = await service.createReport("example.com");
+    const stored = storedReports.get(created.shareId);
+
+    if (!stored?.currentRun) {
+      throw new Error("Expected stored run");
+    }
+
+    stored.report.status = "ready_with_limited_coverage";
+    stored.report.completedAt = new Date();
+    stored.currentRun.status = "completed";
+    stored.currentRun.completedAt = new Date();
+    stored.currentRun.researchSummary = {
+      companyIdentity: {
+        companyName: "Example",
+        archetype: "B2B software vendor",
+        businessModel: "Enterprise software",
+        industry: "Software",
+        publicCompany: false,
+        headquarters: null,
+        sourceIds: [1],
+      },
+      growthPriorities: [],
+      aiMaturityEstimate: {
+        level: "moderate",
+        rationale: "Public materials indicate platform and support scale.",
+        sourceIds: [1],
+      },
+      regulatorySensitivity: {
+        level: "medium",
+        rationale: "The company handles operational workflows with trust expectations.",
+        sourceIds: [1],
+      },
+      notableProductSignals: [],
+      notableHiringSignals: [],
+      notableTrustSignals: [],
+      complaintThemes: [],
+      leadershipSocialThemes: [],
+      researchCompletenessScore: 68,
+      confidenceBySection: [],
+      evidenceGaps: ["Missing downloadable PDF export."],
+      overallConfidence: "medium",
+      sourceIds: [1],
+    };
+    stored.currentRun.accountPlan = createMinimalAccountPlan();
+    stored.currentRun.accountPlan.topUseCases = stored.currentRun.accountPlan.candidateUseCases.slice(0, 3);
+
+    const reused = await service.createReport("https://www.example.com/about", {
+      requesterHash: "reuse-hash",
+    });
+    const status = await service.getReportStatusShell(created.shareId);
+
+    expect(reused.disposition).toBe("reused");
+    expect(reused.reuseReason).toBe("recent_completed");
+    expect(status?.report.status).toBe("ready_with_limited_coverage");
+    expect(status?.isTerminal).toBe(true);
+    expect(status?.result.label).toBe("Limited coverage");
+  });
+
   it("rate limits repeated new report creation attempts for the same requester", async () => {
     const { repository, requestRecords } = createRepositoryStub();
     const service = createReportService({
@@ -347,6 +546,33 @@ describe("createReportService", () => {
     expect(status?.statusUrl).toBe(`/api/reports/${created.shareId}/status`);
     expect(status?.pollAfterMs).toBe(2000);
     expect(status?.isTerminal).toBe(false);
+  });
+
+  it("does not treat an empty completed shell as a successful report", async () => {
+    const { repository, storedReports } = createRepositoryStub();
+    const service = createReportService({ repository });
+    const created = await service.createReport("example.com");
+    const stored = storedReports.get(created.shareId);
+
+    if (!stored?.currentRun) {
+      throw new Error("Expected stored run");
+    }
+
+    stored.report.status = "ready";
+    stored.report.completedAt = new Date();
+    stored.currentRun.status = "completed";
+    stored.currentRun.completedAt = new Date();
+    stored.currentRun.researchSummary = null;
+    stored.currentRun.accountPlan = null;
+
+    const shell = await service.getReportShell(created.shareId);
+    const status = await service.getReportStatusShell(created.shareId);
+
+    expect(shell?.result.state).toBe("failed");
+    expect(shell?.result.label).toBe("Incomplete");
+    expect(shell?.sections.every((section) => section.status === "pending")).toBe(true);
+    expect(status?.result.state).toBe("failed");
+    expect(status?.result.label).toBe("Incomplete");
   });
 
   it("returns a not-found placeholder page model", async () => {

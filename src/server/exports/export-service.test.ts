@@ -281,6 +281,12 @@ function createRepositoryStub() {
     async updateRunAccountPlan() {
       throw new Error("Not needed in this test");
     },
+    async claimRunStepExecution() {
+      throw new Error("Not needed in this test");
+    },
+    async touchRunHeartbeat() {
+      return;
+    },
     async updateRunStepState() {
       throw new Error("Not needed in this test");
     },

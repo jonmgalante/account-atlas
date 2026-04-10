@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 
 import type { FinalAccountPlan } from "@/lib/types/account-plan";
 import type { CrawlIngestionResult } from "@/server/crawl/types";
-import { createInitialPipelineState } from "@/server/pipeline/pipeline-steps";
+import { PipelineStepError } from "@/server/pipeline/pipeline-errors";
+import { createInitialPipelineState, normalizePipelineState } from "@/server/pipeline/pipeline-steps";
 import { createReportPipelineRunner } from "@/server/pipeline/pipeline-runner";
+import { retryReportRunQueueMessage } from "@/server/pipeline/report-run-queue-consumer";
 import type { ReportRepository, StoredReportShell, StoredRunContext } from "@/server/repositories/report-repository";
 
 function createAccountPlan(): FinalAccountPlan {
@@ -161,6 +163,59 @@ function createAccountPlan(): FinalAccountPlan {
   };
 }
 
+function createResearchSummary() {
+  return {
+    companyIdentity: {
+      companyName: "OpenAI",
+      archetype: "AI platform provider",
+      businessModel: "API and enterprise software",
+      industry: "Artificial intelligence",
+      publicCompany: false,
+      headquarters: "San Francisco, California",
+      sourceIds: [1],
+    },
+    growthPriorities: [],
+    aiMaturityEstimate: {
+      level: "advanced" as const,
+      rationale: "Public materials show both platform and workflow offerings.",
+      sourceIds: [1],
+    },
+    regulatorySensitivity: {
+      level: "medium" as const,
+      rationale: "Enterprise AI deployment requires trust and policy review.",
+      sourceIds: [1],
+    },
+    notableProductSignals: [],
+    notableHiringSignals: [],
+    notableTrustSignals: [],
+    complaintThemes: [],
+    leadershipSocialThemes: [],
+    researchCompletenessScore: 82,
+    confidenceBySection: [
+      {
+        section: "company-brief" as const,
+        confidence: 84,
+        rationale: "Identity and positioning are explicit.",
+      },
+    ],
+    evidenceGaps: [],
+    overallConfidence: "medium" as const,
+    sourceIds: [1],
+  };
+}
+
+function createQueueMetadata(deliveryCount: number) {
+  return {
+    messageId: "msg_123",
+    deliveryCount,
+    createdAt: new Date("2026-04-09T20:25:49.000Z"),
+    expiresAt: new Date("2026-04-09T20:35:49.000Z"),
+    topicName: "account-atlas-report-runs",
+    consumerGroup: "default",
+    region: "iad1",
+  };
+}
+
 function createRepositoryStub() {
   const report: StoredRunContext["report"] = {
     id: 1,
@@ -277,6 +332,116 @@ function createRepositoryStub() {
       throw new Error("Not needed in this test");
     },
 
+    async claimRunStepExecution(input) {
+      if (report.status === "ready" || report.status === "ready_with_limited_coverage" || report.status === "failed") {
+        return {
+          outcome: "finalized" as const,
+          context: {
+            report,
+            run,
+          },
+          reason: report.status === "failed" ? ("report_finalized" as const) : ("report_finalized" as const),
+        };
+      }
+
+      if (run.status === "completed" || run.status === "failed" || run.status === "cancelled") {
+        return {
+          outcome: "finalized" as const,
+          context: {
+            report,
+            run,
+          },
+          reason: "run_finalized" as const,
+        };
+      }
+
+      const currentState = normalizePipelineState(run.pipelineState);
+      const stepState = currentState.steps[input.stepKey];
+      const activeStepKey =
+        currentState.currentStepKey && currentState.steps[currentState.currentStepKey]?.status === "running"
+          ? currentState.currentStepKey
+          : null;
+
+      if (stepState.status === "completed") {
+        return {
+          outcome: "already_completed" as const,
+          context: {
+            report,
+            run,
+          },
+        };
+      }
+
+      if (
+        activeStepKey &&
+        run.lastHeartbeatAt &&
+        run.lastHeartbeatAt.getTime() >= Date.now() - input.activeHeartbeatThresholdMs
+      ) {
+        return {
+          outcome: "duplicate_delivery" as const,
+          context: {
+            report,
+            run,
+          },
+          activeStepKey,
+          lastHeartbeatAt: run.lastHeartbeatAt,
+        };
+      }
+
+      const attemptCount = (stepState.attemptCount ?? 0) + 1;
+      const claimedState = normalizePipelineState(run.pipelineState);
+      claimedState.currentStepKey = input.stepKey;
+      claimedState.steps[input.stepKey] = {
+        ...claimedState.steps[input.stepKey],
+        status: "running",
+        attemptCount,
+        startedAt: claimedState.steps[input.stepKey].startedAt ?? (input.startedAt ?? new Date()).toISOString(),
+        completedAt: null,
+        lastAttemptedAt: new Date().toISOString(),
+        lastDeliveryCount: input.deliveryCount ?? null,
+        errorCode: null,
+        errorMessage: null,
+        fallbackApplied: false,
+        retryExhausted: false,
+      };
+
+      run.status = input.stepRunStatus;
+      run.progressPercent = input.progressPercent;
+      run.stepKey = input.stepKey;
+      run.statusMessage = `${input.statusMessage} (${attemptCount} ${attemptCount === 1 ? "attempt" : "attempts"}).`;
+      run.pipelineState = claimedState;
+      run.queueMessageId = input.queueMessageId ?? null;
+      run.errorCode = null;
+      run.errorMessage = null;
+      run.startedAt = input.startedAt ?? run.startedAt ?? new Date("2026-04-07T12:00:00.000Z");
+      run.lastHeartbeatAt = new Date();
+      run.updatedAt = new Date("2026-04-07T12:04:30.000Z");
+      report.status = input.reportStatus ?? report.status;
+      report.updatedAt = new Date("2026-04-07T12:04:30.000Z");
+
+      const resumedFromStatus =
+        stepState.status === "retrying" || stepState.status === "failed" || stepState.status === "running"
+          ? stepState.status
+          : null;
+
+      return {
+        outcome: "claimed" as const,
+        context: {
+          report,
+          run,
+        },
+        claimMode: resumedFromStatus ? ("resumed" as const) : ("fresh" as const),
+        resumedFromStatus,
+        activeStepKey,
+      };
+    },
+
+    async touchRunHeartbeat({ stepKey }) {
+      if (run.stepKey === stepKey) {
+        run.lastHeartbeatAt = new Date();
+      }
+    },
+
     async updateRunStepState(input) {
       run.status = input.status;
       run.executionMode = input.executionMode ?? run.executionMode;
@@ -290,11 +455,13 @@ function createRepositoryStub() {
       run.errorCode = input.errorCode ?? null;
       run.errorMessage = input.errorMessage ?? null;
       run.startedAt = input.startedAt ?? run.startedAt;
+      run.lastHeartbeatAt = input.stepKey ? new Date("2026-04-07T12:05:00.000Z") : run.lastHeartbeatAt;
       run.completedAt = input.completedAt ?? null;
       run.failedAt = input.failedAt ?? null;
       run.updatedAt = new Date("2026-04-07T12:05:00.000Z");
       report.status = input.reportStatus ?? report.status;
       report.completedAt = input.reportCompletedAt ?? null;
+      report.failedAt = input.reportFailedAt ?? null;
       report.updatedAt = new Date("2026-04-07T12:05:00.000Z");
     },
 
@@ -372,6 +539,9 @@ function createRepositoryStub() {
           pdfSourcesStored: 1,
           dedupedSources: 0,
           sourceIds: [1, 2, 3],
+          coverageStatus: "broad",
+          fallbackPlanApplied: null,
+          limitations: [],
           manifest: {
             visitedUrls: ["https://openai.com/"],
             pdfUrls: ["https://openai.com/investors/annual-report.pdf"],
@@ -396,6 +566,7 @@ function createRepositoryStub() {
     },
     accountPlanService: {
       async generateAccountPlan() {
+        run.researchSummary = createResearchSummary();
         const accountPlan = createAccountPlan();
         accountPlan.topUseCases = accountPlan.candidateUseCases.slice(0, 3);
         run.accountPlan = accountPlan;
@@ -518,10 +689,12 @@ describe("createReportPipelineRunner", () => {
     });
 
     expect(stub.run.status).toBe("completed");
-    expect(stub.report.status).toBe("ready");
+    expect(stub.report.status).toBe("ready_with_limited_coverage");
     expect(stub.artifacts.some((artifact) => artifact.artifactType === "markdown")).toBe(true);
     expect(stub.artifacts.some((artifact) => artifact.artifactType === "pdf")).toBe(false);
-    expect(stub.recentEvents.some((event) => event.eventType === "artifact.pdf.failed")).toBe(true);
+    expect(stub.recentEvents.some((event) => event.eventType === "fallback_applied")).toBe(true);
+    expect(stub.recentEvents.some((event) => event.eventType === "run_completed_with_limited_coverage")).toBe(true);
+    expect(stub.run.pipelineState.steps.export_pdf.fallbackApplied).toBe(true);
   });
 
   it("keeps the run shareable when Markdown export fails before PDF succeeds", async () => {
@@ -545,10 +718,49 @@ describe("createReportPipelineRunner", () => {
     });
 
     expect(stub.run.status).toBe("completed");
-    expect(stub.report.status).toBe("ready");
+    expect(stub.report.status).toBe("ready_with_limited_coverage");
     expect(stub.artifacts.some((artifact) => artifact.artifactType === "markdown")).toBe(false);
     expect(stub.artifacts.some((artifact) => artifact.artifactType === "pdf")).toBe(true);
-    expect(stub.recentEvents.some((event) => event.eventType === "artifact.markdown.failed")).toBe(true);
+    expect(stub.recentEvents.some((event) => event.eventType === "fallback_applied")).toBe(true);
+    expect(stub.recentEvents.some((event) => event.eventType === "run_completed_with_limited_coverage")).toBe(true);
+    expect(stub.run.pipelineState.steps.export_markdown.fallbackApplied).toBe(true);
+  });
+
+  it("completes with limited coverage when optional account-plan sections are missing", async () => {
+    const stub = createRepositoryStub();
+    const runner = createReportPipelineRunner({
+      repository: stub.repository,
+      crawler: stub.crawler,
+      researchService: stub.researchService,
+      accountPlanService: {
+        async generateAccountPlan() {
+          stub.run.researchSummary = createResearchSummary();
+          const accountPlan = createAccountPlan();
+          accountPlan.topUseCases = accountPlan.candidateUseCases.slice(0, 3);
+          accountPlan.objectionsAndRebuttals = [];
+          accountPlan.pilotPlan = null;
+          accountPlan.expansionScenarios = {
+            low: null,
+            base: null,
+            high: null,
+          };
+          stub.run.accountPlan = accountPlan;
+
+          return "Generated a usable account plan with limited optional coverage.";
+        },
+      },
+      exportService: stub.exportService,
+    });
+
+    await runner.processReportRun({
+      runId: 11,
+      trigger: "inline",
+    });
+
+    expect(stub.run.status).toBe("completed");
+    expect(stub.report.status).toBe("ready_with_limited_coverage");
+    expect(stub.run.pipelineState.steps.finalize_report.fallbackApplied).toBe(true);
+    expect(stub.recentEvents.some((event) => event.eventType === "run_completed_with_limited_coverage")).toBe(true);
   });
 
   it("keeps the run in progress when a step fails but still has retry attempts remaining", async () => {
@@ -585,7 +797,7 @@ describe("createReportPipelineRunner", () => {
     expect(stub.run.stepKey).toBe("enrich_external_sources");
     expect(stub.run.statusMessage).toContain("will retry automatically");
     expect(stub.run.pipelineState.steps.enrich_external_sources.status).toBe("retrying");
-    expect(stub.recentEvents.some((event) => event.eventType === "pipeline.step.retry_scheduled")).toBe(true);
+    expect(stub.recentEvents.some((event) => event.eventType === "retrying")).toBe(true);
 
     await runner.processReportRun({
       runId: 11,
@@ -596,5 +808,218 @@ describe("createReportPipelineRunner", () => {
     expect(stub.run.status).toBe("completed");
     expect(stub.run.pipelineState.steps.enrich_external_sources.status).toBe("completed");
     expect(enrichAttempts).toBe(2);
+    expect(stub.crawlInvocations()).toBe(1);
+  });
+
+  it("acknowledges duplicate active queue deliveries instead of retrying them again", async () => {
+    const stub = createRepositoryStub();
+    let releaseCrawl: () => void = () => {};
+    let markCrawlStarted: () => void = () => {};
+    const crawlStarted = new Promise<void>((resolve) => {
+      markCrawlStarted = resolve;
+    });
+    const crawlGate = new Promise<void>((resolve) => {
+      releaseCrawl = resolve;
+    });
+
+    const runner = createReportPipelineRunner({
+      repository: stub.repository,
+      crawler: {
+        ...stub.crawler,
+        async crawlCompanySite() {
+          markCrawlStarted();
+          await crawlGate;
+
+          return stub.crawler.crawlCompanySite();
+        },
+      },
+      researchService: stub.researchService,
+      accountPlanService: stub.accountPlanService,
+      exportService: stub.exportService,
+    });
+
+    const activeRunPromise = runner.processReportRun({
+      runId: 11,
+      trigger: "queue",
+      queueMessageId: "msg_123",
+      deliveryCount: 1,
+    });
+
+    await crawlStarted;
+
+    const duplicateFailure = (await runner
+      .processReportRun({
+        runId: 11,
+        trigger: "queue",
+        queueMessageId: "msg_123",
+        deliveryCount: 2,
+      })
+      .catch((error) => error)) as PipelineStepError;
+
+    expect(duplicateFailure).toBeInstanceOf(PipelineStepError);
+    expect(duplicateFailure.code).toBe("PIPELINE_RUN_ALREADY_ACTIVE");
+    expect(
+      retryReportRunQueueMessage(duplicateFailure, createQueueMetadata(2)),
+    ).toEqual({ acknowledge: true });
+    expect(stub.recentEvents.some((event) => event.eventType === "duplicate_delivery_detected")).toBe(true);
+
+    releaseCrawl();
+    await activeRunPromise;
+
+    expect(stub.report.status).toBe("ready");
+    expect(stub.crawlInvocations()).toBe(1);
+  });
+
+  it("completes with limited coverage when crawl falls back to a lighter source plan", async () => {
+    const stub = createRepositoryStub();
+    const runner = createReportPipelineRunner({
+      repository: stub.repository,
+      crawler: {
+        ...stub.crawler,
+        async crawlCompanySite() {
+          return {
+            pagesFetched: 2,
+            htmlPagesStored: 1,
+            pdfSourcesStored: 0,
+            dedupedSources: 0,
+            sourceIds: [1],
+            coverageStatus: "limited",
+            fallbackPlanApplied: "shallow_first_party",
+            limitations: ["limited_first_party_coverage"],
+            manifest: {
+              visitedUrls: ["https://openai.com/", "https://openai.com/about"],
+              pdfUrls: [],
+              blockedUrls: ["https://openai.com/products"],
+            },
+          };
+        },
+      },
+      researchService: stub.researchService,
+      accountPlanService: stub.accountPlanService,
+      exportService: stub.exportService,
+    });
+
+    await runner.processReportRun({
+      runId: 11,
+      trigger: "inline",
+    });
+
+    expect(stub.run.status).toBe("completed");
+    expect(stub.report.status).toBe("ready_with_limited_coverage");
+    expect(stub.run.pipelineState.steps.crawl_company_site.fallbackApplied).toBe(true);
+    expect(stub.recentEvents.some((event) => event.eventType === "run_completed_with_limited_coverage")).toBe(true);
+  });
+
+  it("marks the run failed on the final step attempt and acknowledges the queue retry hook", async () => {
+    const stub = createRepositoryStub();
+    let crawlAttempts = 0;
+    const runner = createReportPipelineRunner({
+      repository: stub.repository,
+      crawler: {
+        ...stub.crawler,
+        async crawlCompanySite() {
+          crawlAttempts += 1;
+          throw new PipelineStepError(
+            "CRAWL_RESPONSE_TOO_LARGE",
+            "Skipping https://www.ford.com/ because it exceeded the crawl response budget.",
+          );
+        },
+      },
+      researchService: stub.researchService,
+      accountPlanService: stub.accountPlanService,
+      exportService: stub.exportService,
+    });
+
+    for (const deliveryCount of [1, 2]) {
+      const failure = await runner
+        .processReportRun({
+          runId: 11,
+          trigger: "queue",
+          queueMessageId: "msg_123",
+          deliveryCount,
+        })
+        .catch((error) => error);
+
+      expect(failure).toBeInstanceOf(PipelineStepError);
+      expect(failure.message).toContain("crawl response budget");
+      expect(
+        retryReportRunQueueMessage(failure, createQueueMetadata(deliveryCount)),
+      ).toEqual({ afterSeconds: 2 ** Math.min(deliveryCount, 6) });
+    }
+
+    const terminalFailure = (await runner
+      .processReportRun({
+        runId: 11,
+        trigger: "queue",
+        queueMessageId: "msg_123",
+        deliveryCount: 3,
+      })
+      .catch((error) => error)) as PipelineStepError;
+
+    expect(terminalFailure).toBeInstanceOf(PipelineStepError);
+    expect(terminalFailure.code).toBe("PIPELINE_RUN_FAILED");
+    expect(stub.report.status).toBe("failed");
+    expect(stub.run.status).toBe("failed");
+    expect(stub.run.errorCode).toBe("CRAWL_RESPONSE_TOO_LARGE");
+    expect(stub.run.pipelineState.steps.crawl_company_site.status).toBe("failed");
+    expect(stub.recentEvents.some((event) => event.eventType === "step_failed")).toBe(true);
+    expect(stub.recentEvents.some((event) => event.eventType === "run_failed")).toBe(true);
+    expect(
+      retryReportRunQueueMessage(terminalFailure, createQueueMetadata(3)),
+    ).toEqual({ acknowledge: true });
+    expect(crawlAttempts).toBe(3);
+  });
+
+  it("fails explicitly when the minimum viable seller-facing brief never persists", async () => {
+    const stub = createRepositoryStub();
+    const runner = createReportPipelineRunner({
+      repository: stub.repository,
+      crawler: stub.crawler,
+      researchService: stub.researchService,
+      accountPlanService: {
+        async generateAccountPlan() {
+          stub.run.researchSummary = createResearchSummary();
+          stub.run.accountPlan = null;
+          return "Account-plan synthesis skipped because the minimum brief could not be formed.";
+        },
+      },
+      exportService: stub.exportService,
+    });
+
+    const firstFailure = (await runner
+      .processReportRun({
+        runId: 11,
+        trigger: "queue",
+        queueMessageId: "msg_123",
+        deliveryCount: 1,
+      })
+      .catch((error) => error)) as PipelineStepError;
+
+    expect(firstFailure).toBeInstanceOf(PipelineStepError);
+    expect(firstFailure.code).toBe("REPORT_CORE_CONTRACT_INCOMPLETE");
+    expect(
+      retryReportRunQueueMessage(firstFailure, createQueueMetadata(1)),
+    ).toEqual({ afterSeconds: 2 });
+
+    const terminalFailure = (await runner
+      .processReportRun({
+        runId: 11,
+        trigger: "queue",
+        queueMessageId: "msg_123",
+        deliveryCount: 2,
+      })
+      .catch((error) => error)) as PipelineStepError;
+
+    expect(terminalFailure).toBeInstanceOf(PipelineStepError);
+    expect(terminalFailure.code).toBe("PIPELINE_RUN_FAILED");
+    expect(stub.report.status).toBe("failed");
+    expect(stub.run.status).toBe("failed");
+    expect(stub.run.pipelineState.steps.finalize_report.status).toBe("failed");
+    expect(stub.recentEvents.some((event) => event.eventType === "run_completed")).toBe(false);
+    expect(stub.recentEvents.some((event) => event.eventType === "run_completed_with_limited_coverage")).toBe(false);
+    expect(stub.recentEvents.some((event) => event.eventType === "run_failed")).toBe(true);
+    expect(
+      retryReportRunQueueMessage(terminalFailure, createQueueMetadata(2)),
+    ).toEqual({ acknowledge: true });
   });
 });

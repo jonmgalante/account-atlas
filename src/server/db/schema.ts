@@ -24,8 +24,12 @@ type StoredPipelineStepState = {
   attemptCount: number;
   startedAt: string | null;
   completedAt: string | null;
+  lastAttemptedAt: string | null;
+  lastDeliveryCount: number | null;
   errorCode: string | null;
   errorMessage: string | null;
+  fallbackApplied: boolean;
+  retryExhausted: boolean;
 };
 
 type StoredPipelineState = {
@@ -36,7 +40,7 @@ type StoredPipelineState = {
 const emptyJsonObject = sql`'{}'::jsonb`;
 const emptyJsonArray = sql`'[]'::jsonb`;
 
-export const reportStatusEnum = pgEnum("report_status", ["queued", "running", "ready", "failed"]);
+export const reportStatusEnum = pgEnum("report_status", ["queued", "running", "ready", "ready_with_limited_coverage", "failed"]);
 export const runStatusEnum = pgEnum("run_status", [
   "queued",
   "fetching",

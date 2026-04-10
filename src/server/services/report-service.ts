@@ -1,6 +1,7 @@
 import "server-only";
 
 import { createPendingReportSections } from "@/lib/report-sections";
+import { evaluateSellerFacingReport, getReadyReportSectionKeys } from "@/lib/report-completion";
 import type { FinalAccountPlan } from "@/lib/types/account-plan";
 import type {
   CreateReportResponse,
@@ -243,6 +244,14 @@ function isTerminalRunStatus(status: ReportRunSummary["status"]) {
   return status === "completed" || status === "failed" || status === "cancelled";
 }
 
+function isReadyLikeReportStatus(status: ReportSummary["status"]) {
+  return status === "ready" || status === "ready_with_limited_coverage";
+}
+
+function isTerminalReportStatus(status: ReportSummary["status"]) {
+  return isReadyLikeReportStatus(status) || status === "failed";
+}
+
 function buildShellMessage(shell: StoredReportShell) {
   if (!shell.currentRun) {
     return "The report exists, but no run record is attached yet.";
@@ -263,13 +272,26 @@ function hasThinEvidence(currentRun: ReportRunSummary | null) {
   return buildThinEvidenceWarnings(currentRun).some((warning) => warning.level === "warning");
 }
 
-function buildResultMeta(currentRun: ReportRunSummary | null) {
+function buildResultMeta(input: {
+  currentRun: ReportRunSummary | null;
+  reportStatus: ReportSummary["status"];
+}) {
+  const { currentRun, reportStatus } = input;
+  const contract = evaluateSellerFacingReport({
+    researchSummary: currentRun?.researchSummary,
+    accountPlan: currentRun?.accountPlan,
+  });
   const partialDataAvailable = Boolean(currentRun?.researchSummary || currentRun?.accountPlan);
   let state: ReportContentState = "pending";
   let label = "In progress";
   let summary = "The report pipeline is still collecting public evidence for this company.";
 
-  if (currentRun?.status === "failed" && partialDataAvailable) {
+  if (reportStatus === "ready_with_limited_coverage" && contract.isSatisfied) {
+    state = "ready";
+    label = "Limited coverage";
+    summary =
+      "The run completed with a usable seller-facing brief, but at least one optional section, export, or fallback path remained limited. Review the build log and warnings before acting.";
+  } else if (currentRun?.status === "failed" && partialDataAvailable) {
     state = "partial";
     label = "Partial report";
     summary = "This run failed after persisting some research. Treat visible sections as partial and validate them before acting.";
@@ -277,18 +299,18 @@ function buildResultMeta(currentRun: ReportRunSummary | null) {
     state = "failed";
     label = "Failed";
     summary = "The latest run failed before any reliable report sections were persisted.";
-  } else if (currentRun?.accountPlan) {
+  } else if (contract.isSatisfied) {
     state = "ready";
     label = "Complete";
-    summary = "The report includes a completed account plan with source-backed recommendations and exports.";
+    summary = "The report includes a usable seller-facing brief with source-backed recommendations.";
   } else if (currentRun?.researchSummary) {
     state = "partial";
     label = "Research only";
-    summary = "Research completed, but the final account plan did not fully persist. Treat the report as partial.";
+    summary = "Research completed, but the minimum seller-facing brief did not fully persist. Treat the report as partial.";
   } else if (currentRun?.status === "completed") {
     state = "failed";
     label = "Incomplete";
-    summary = "The pipeline completed without enough persisted evidence to render a reliable report.";
+    summary = "The pipeline completed without enough persisted seller-facing content to render a reliable report.";
   }
 
   return {
@@ -296,7 +318,7 @@ function buildResultMeta(currentRun: ReportRunSummary | null) {
     label,
     summary,
     hasThinEvidence: hasThinEvidence(currentRun),
-    hasPartialData: partialDataAvailable && state === "partial",
+    hasPartialData: partialDataAvailable && (state === "partial" || reportStatus === "ready_with_limited_coverage"),
   };
 }
 
@@ -305,7 +327,18 @@ function buildReportTitle(report: ReportSummary) {
 }
 
 function buildReportSummary(shell: ReportShell) {
-  if (shell.currentRun?.status === "completed" && shell.currentRun.accountPlan) {
+  const contract = evaluateSellerFacingReport({
+    researchSummary: shell.currentRun?.researchSummary,
+    accountPlan: shell.currentRun?.accountPlan,
+  });
+
+  if (shell.currentRun?.status === "completed" && shell.report.status === "ready_with_limited_coverage") {
+    return contract.isSatisfied
+      ? "This report run completed with a usable seller-facing brief, but some optional sections, fallbacks, or exports remain limited."
+      : "This report run completed with limited coverage. Review the available sections, warnings, and build log before using it as a full account brief.";
+  }
+
+  if (shell.currentRun?.status === "completed" && contract.isSatisfied && shell.currentRun.accountPlan) {
     return `This report run completed with a source-backed account plan, ${shell.currentRun.accountPlan.candidateUseCases.length} scored use cases, and an explicit ${shell.currentRun.accountPlan.overallAccountMotion.recommendedMotion} motion recommendation.`;
   }
 
@@ -316,7 +349,7 @@ function buildReportSummary(shell: ReportShell) {
   }
 
   if (shell.currentRun?.status === "completed" && shell.currentRun.researchSummary) {
-    return "This report run completed with source-backed research, but the final account-plan sections did not fully persist. Treat it as a partial report.";
+    return "This report run completed with source-backed research, but the minimum seller-facing brief did not fully persist. Treat it as a partial report.";
   }
 
   if (shell.currentRun?.status === "completed") {
@@ -328,32 +361,14 @@ function buildReportSummary(shell: ReportShell) {
 
 function buildReportSections(currentRun: ReportRunSummary | null): ReportSectionShell[] {
   const sections = createPendingReportSections();
+  const readySectionKeys = getReadyReportSectionKeys({
+    researchSummary: currentRun?.researchSummary,
+    accountPlan: currentRun?.accountPlan,
+  });
 
-  if (currentRun?.researchSummary) {
-    for (const key of ["company-brief", "fact-base", "ai-maturity-signals"] as const) {
-      const section = sections.find((entry) => entry.key === key);
-
-      if (section) {
-        section.status = "ready";
-      }
-    }
-  }
-
-  if (currentRun?.accountPlan) {
-    for (const key of [
-      "prioritized-use-cases",
-      "recommended-motion",
-      "stakeholder-hypotheses",
-      "objections",
-      "discovery-questions",
-      "pilot-plan",
-      "expansion-scenarios",
-    ] as const) {
-      const section = sections.find((entry) => entry.key === key);
-
-      if (section) {
-        section.status = "ready";
-      }
+  for (const section of sections) {
+    if (readySectionKeys.has(section.key)) {
+      section.status = "ready";
     }
   }
 
@@ -387,9 +402,9 @@ function buildSectionAssessments(sections: ReportSectionShell[], currentRun: Rep
 }
 
 function buildCompletenessSummary(sections: ReportSectionShell[], currentRun: ReportRunSummary | null) {
-  if (currentRun?.accountPlan) {
-    const readySections = sections.filter((section) => section.status === "ready").length;
+  const readySections = sections.filter((section) => section.status === "ready").length;
 
+  if (readySections > 0) {
     return `${readySections} of ${sections.length} major sections populated`;
   }
 
@@ -541,7 +556,7 @@ export function createReportService(dependencies: ReportServiceDependencies = {}
         const failedCooldownThreshold = new Date(Date.now() - serverEnv.REPORT_DOMAIN_FAILED_COOLDOWN_MS);
 
         if (
-          latestByDomain.report.status === "ready" &&
+          isReadyLikeReportStatus(latestByDomain.report.status) &&
           latestByDomain.report.completedAt &&
           latestByDomain.report.completedAt >= recentReadyThreshold
         ) {
@@ -773,7 +788,10 @@ export function createReportService(dependencies: ReportServiceDependencies = {}
         report: serializeReport(shell.report),
         currentRun,
         sections: buildReportSections(currentRun),
-        result: buildResultMeta(currentRun),
+        result: buildResultMeta({
+          currentRun,
+          reportStatus: shell.report.status,
+        }),
         message: buildShellMessage(shell),
       };
     },
@@ -799,7 +817,10 @@ export function createReportService(dependencies: ReportServiceDependencies = {}
         report: serializeReport(shell.report),
         currentRun,
         sections,
-        result: buildResultMeta(currentRun),
+        result: buildResultMeta({
+          currentRun,
+          reportStatus: shell.report.status,
+        }),
         recentEvents: shell.recentEvents.map(serializeEvent),
         facts: facts.map(serializeFact),
         sources: sources.map(serializeSource),
@@ -830,10 +851,13 @@ export function createReportService(dependencies: ReportServiceDependencies = {}
           completedAt: shell.report.completedAt?.toISOString() ?? null,
         },
         currentRun,
-        result: buildResultMeta(currentRun),
+        result: buildResultMeta({
+          currentRun,
+          reportStatus: shell.report.status,
+        }),
         recentEvents: shell.recentEvents.map(serializeEvent),
         pollAfterMs: STATUS_POLL_INTERVAL_MS,
-        isTerminal: currentRun ? isTerminalRunStatus(currentRun.status) : shell.report.status === "ready",
+        isTerminal: currentRun ? isTerminalRunStatus(currentRun.status) : isTerminalReportStatus(shell.report.status),
         message: buildShellMessage(shell),
       };
     },

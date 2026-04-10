@@ -93,6 +93,12 @@ export type ExpansionScenario = {
   evidenceSourceIds: number[];
 };
 
+export type ExpansionScenarioSet = {
+  low: ExpansionScenario | null;
+  base: ExpansionScenario | null;
+  high: ExpansionScenario | null;
+};
+
 export type AccountMotionRecommendation = {
   recommendedMotion: MotionRecommendation;
   rationale: string;
@@ -106,10 +112,6 @@ export type FinalAccountPlan = {
   stakeholderHypotheses: StakeholderHypothesis[];
   objectionsAndRebuttals: ObjectionAndRebuttal[];
   discoveryQuestions: DiscoveryQuestion[];
-  pilotPlan: PilotPlan;
-  expansionScenarios: {
-    low: ExpansionScenario;
-    base: ExpansionScenario;
-    high: ExpansionScenario;
-  };
+  pilotPlan: PilotPlan | null;
+  expansionScenarios: ExpansionScenarioSet;
 };

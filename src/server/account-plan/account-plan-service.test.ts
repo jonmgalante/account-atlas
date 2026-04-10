@@ -233,6 +233,12 @@ function createRepositoryStub() {
     async updateRunAccountPlan({ accountPlan }) {
       context.run.accountPlan = accountPlan;
     },
+    async claimRunStepExecution() {
+      throw new Error("Not needed");
+    },
+    async touchRunHeartbeat() {
+      return;
+    },
     async updateRunStepState() {
       throw new Error("Not needed");
     },
@@ -323,6 +329,7 @@ function createOpenAIStub(
     timeoutMs?: number;
     maxAttempts?: number;
   }> = [],
+  narrativeOverride?: Record<string, unknown>,
 ): OpenAIResearchClient {
   return {
     isConfigured() {
@@ -359,143 +366,148 @@ function createOpenAIStub(
         } as never;
       }
 
+      const defaultNarrative = {
+        overallAccountMotion: {
+          recommendedMotion: "hybrid",
+          rationale: "Top use cases mix knowledge-heavy workflows with integration-oriented execution paths.",
+          evidenceSourceIds: [1, 2],
+        },
+        stakeholderHypotheses: [
+          {
+            likelyRole: "VP of Engineering",
+            department: "engineering",
+            hypothesis: "Likely sponsor for internal platform and developer productivity use cases.",
+            rationale: "Public platform positioning makes engineering sponsorship plausible.",
+            confidence: 81,
+            evidenceSourceIds: [1],
+          },
+          {
+            likelyRole: "Head of IT",
+            department: "it_security",
+            hypothesis: "Likely gatekeeper for rollout and security controls.",
+            rationale: "Status and trust signals imply an operational review path.",
+            confidence: 76,
+            evidenceSourceIds: [1, 2],
+          },
+          {
+            likelyRole: "Revenue Operations leader",
+            department: "sales",
+            hypothesis: "Likely sponsor for commercial workflow automation pilots.",
+            rationale: "Commercial scaling pressure makes measurable seller productivity attractive.",
+            confidence: 74,
+            evidenceSourceIds: [1],
+          },
+        ],
+        objectionsAndRebuttals: [
+          {
+            objection: "Security and trust review will slow adoption.",
+            rebuttal: "Start with bounded workflows and documented access controls while using public trust evidence to frame the pilot.",
+            evidenceSourceIds: [1, 2],
+          },
+          {
+            objection: "Teams already have too many tools.",
+            rebuttal: "Prioritize a workflow with a measurable cycle-time gain and a narrow initial user group.",
+            evidenceSourceIds: [1],
+          },
+          {
+            objection: "API work may require scarce engineering time.",
+            rebuttal: "Sequence a workspace-led pilot first, then expand into API-backed integration where value is proven.",
+            evidenceSourceIds: [1],
+          },
+          {
+            objection: "Evidence is still incomplete for some downstream workflows.",
+            rebuttal: "Keep low-confidence items as open questions and limit the pilot to the best-supported use cases.",
+            evidenceSourceIds: [1, 2],
+          },
+        ],
+        discoveryQuestions: [
+          {
+            question: "Which team owns the first pilot workflow end to end?",
+            whyItMatters: "Execution stalls without a clear business owner.",
+            evidenceSourceIds: [1],
+          },
+          {
+            question: "Which internal knowledge repositories are already curated enough to use safely?",
+            whyItMatters: "This shapes whether workspace can deliver value quickly.",
+            evidenceSourceIds: [1],
+          },
+          {
+            question: "Where do existing security reviews create rollout friction?",
+            whyItMatters: "This affects pilot scope and motion choice.",
+            evidenceSourceIds: [2],
+          },
+          {
+            question: "Which metrics would define a successful 90-day pilot?",
+            whyItMatters: "Expansion requires an agreed business case.",
+            evidenceSourceIds: [1],
+          },
+          {
+            question: "Which systems need API integration versus human-in-the-loop workspace use?",
+            whyItMatters: "This separates hybrid from single-motion rollout paths.",
+            evidenceSourceIds: [1],
+          },
+          {
+            question: "Which executive sponsor will back change management after the pilot?",
+            whyItMatters: "Expansion depends on a credible sponsor.",
+            evidenceSourceIds: [1, 2],
+          },
+        ],
+        pilotPlan: {
+          objective: "Validate one knowledge-centric and one integration-adjacent workflow with clear business metrics.",
+          recommendedMotion: "hybrid",
+          scope: "Start with a small cross-functional team and two bounded workflows.",
+          successMetrics: ["Cycle time reduction", "User adoption", "Quality acceptance rate"],
+          phases: [
+            {
+              name: "Discovery and scope",
+              duration: "Weeks 1-2",
+              goals: ["Confirm owners", "Map dependencies"],
+              deliverables: ["Scoped pilot brief", "Success metrics baseline"],
+            },
+            {
+              name: "Build and launch",
+              duration: "Weeks 3-8",
+              goals: ["Configure workflow", "Train pilot users"],
+              deliverables: ["Pilot workflow", "Security review notes"],
+            },
+            {
+              name: "Measure and expand",
+              duration: "Weeks 9-12",
+              goals: ["Measure impact", "Decide next rollout"],
+              deliverables: ["Pilot readout", "Expansion recommendation"],
+            },
+          ],
+          dependencies: ["Pilot owner", "Security review path", "Baseline metrics"],
+          risks: ["Evidence is thinner for some cross-functional workflows", "Integration complexity could stretch timelines"],
+          evidenceSourceIds: [1, 2],
+        },
+        expansionScenarios: {
+          low: {
+            summary: "Expand only the first successful workflow and keep rollout inside one function.",
+            assumptions: ["One sponsor stays engaged"],
+            expectedOutcomes: ["Measured productivity gain", "Limited platform expansion"],
+            evidenceSourceIds: [1],
+          },
+          base: {
+            summary: "Expand the pilot into adjacent teams with a hybrid motion.",
+            assumptions: ["Two functions see measurable value", "Security review path is workable"],
+            expectedOutcomes: ["Broader adoption", "Follow-on integration work"],
+            evidenceSourceIds: [1, 2],
+          },
+          high: {
+            summary: "Standardize multiple workflows and widen into platform-level rollout.",
+            assumptions: ["Executive sponsor emerges", "Pilot metrics clearly exceed baseline"],
+            expectedOutcomes: ["Multi-team adoption", "Larger API and workspace footprint"],
+            evidenceSourceIds: [1, 2],
+          },
+        },
+      };
+
       return {
         responseId: "resp_narrative",
         parsed: {
-          overallAccountMotion: {
-            recommendedMotion: "hybrid",
-            rationale: "Top use cases mix knowledge-heavy workflows with integration-oriented execution paths.",
-            evidenceSourceIds: [1, 2],
-          },
-          stakeholderHypotheses: [
-            {
-              likelyRole: "VP of Engineering",
-              department: "engineering",
-              hypothesis: "Likely sponsor for internal platform and developer productivity use cases.",
-              rationale: "Public platform positioning makes engineering sponsorship plausible.",
-              confidence: 81,
-              evidenceSourceIds: [1],
-            },
-            {
-              likelyRole: "Head of IT",
-              department: "it_security",
-              hypothesis: "Likely gatekeeper for rollout and security controls.",
-              rationale: "Status and trust signals imply an operational review path.",
-              confidence: 76,
-              evidenceSourceIds: [1, 2],
-            },
-            {
-              likelyRole: "Revenue Operations leader",
-              department: "sales",
-              hypothesis: "Likely sponsor for commercial workflow automation pilots.",
-              rationale: "Commercial scaling pressure makes measurable seller productivity attractive.",
-              confidence: 74,
-              evidenceSourceIds: [1],
-            },
-          ],
-          objectionsAndRebuttals: [
-            {
-              objection: "Security and trust review will slow adoption.",
-              rebuttal: "Start with bounded workflows and documented access controls while using public trust evidence to frame the pilot.",
-              evidenceSourceIds: [1, 2],
-            },
-            {
-              objection: "Teams already have too many tools.",
-              rebuttal: "Prioritize a workflow with a measurable cycle-time gain and a narrow initial user group.",
-              evidenceSourceIds: [1],
-            },
-            {
-              objection: "API work may require scarce engineering time.",
-              rebuttal: "Sequence a workspace-led pilot first, then expand into API-backed integration where value is proven.",
-              evidenceSourceIds: [1],
-            },
-            {
-              objection: "Evidence is still incomplete for some downstream workflows.",
-              rebuttal: "Keep low-confidence items as open questions and limit the pilot to the best-supported use cases.",
-              evidenceSourceIds: [1, 2],
-            },
-          ],
-          discoveryQuestions: [
-            {
-              question: "Which team owns the first pilot workflow end to end?",
-              whyItMatters: "Execution stalls without a clear business owner.",
-              evidenceSourceIds: [1],
-            },
-            {
-              question: "Which internal knowledge repositories are already curated enough to use safely?",
-              whyItMatters: "This shapes whether workspace can deliver value quickly.",
-              evidenceSourceIds: [1],
-            },
-            {
-              question: "Where do existing security reviews create rollout friction?",
-              whyItMatters: "This affects pilot scope and motion choice.",
-              evidenceSourceIds: [2],
-            },
-            {
-              question: "Which metrics would define a successful 90-day pilot?",
-              whyItMatters: "Expansion requires an agreed business case.",
-              evidenceSourceIds: [1],
-            },
-            {
-              question: "Which systems need API integration versus human-in-the-loop workspace use?",
-              whyItMatters: "This separates hybrid from single-motion rollout paths.",
-              evidenceSourceIds: [1],
-            },
-            {
-              question: "Which executive sponsor will back change management after the pilot?",
-              whyItMatters: "Expansion depends on a credible sponsor.",
-              evidenceSourceIds: [1, 2],
-            },
-          ],
-          pilotPlan: {
-            objective: "Validate one knowledge-centric and one integration-adjacent workflow with clear business metrics.",
-            recommendedMotion: "hybrid",
-            scope: "Start with a small cross-functional team and two bounded workflows.",
-            successMetrics: ["Cycle time reduction", "User adoption", "Quality acceptance rate"],
-            phases: [
-              {
-                name: "Discovery and scope",
-                duration: "Weeks 1-2",
-                goals: ["Confirm owners", "Map dependencies"],
-                deliverables: ["Scoped pilot brief", "Success metrics baseline"],
-              },
-              {
-                name: "Build and launch",
-                duration: "Weeks 3-8",
-                goals: ["Configure workflow", "Train pilot users"],
-                deliverables: ["Pilot workflow", "Security review notes"],
-              },
-              {
-                name: "Measure and expand",
-                duration: "Weeks 9-12",
-                goals: ["Measure impact", "Decide next rollout"],
-                deliverables: ["Pilot readout", "Expansion recommendation"],
-              },
-            ],
-            dependencies: ["Pilot owner", "Security review path", "Baseline metrics"],
-            risks: ["Evidence is thinner for some cross-functional workflows", "Integration complexity could stretch timelines"],
-            evidenceSourceIds: [1, 2],
-          },
-          expansionScenarios: {
-            low: {
-              summary: "Expand only the first successful workflow and keep rollout inside one function.",
-              assumptions: ["One sponsor stays engaged"],
-              expectedOutcomes: ["Measured productivity gain", "Limited platform expansion"],
-              evidenceSourceIds: [1],
-            },
-            base: {
-              summary: "Expand the pilot into adjacent teams with a hybrid motion.",
-              assumptions: ["Two functions see measurable value", "Security review path is workable"],
-              expectedOutcomes: ["Broader adoption", "Follow-on integration work"],
-              evidenceSourceIds: [1, 2],
-            },
-            high: {
-              summary: "Standardize multiple workflows and widen into platform-level rollout.",
-              assumptions: ["Executive sponsor emerges", "Pilot metrics clearly exceed baseline"],
-              expectedOutcomes: ["Multi-team adoption", "Larger API and workspace footprint"],
-              evidenceSourceIds: [1, 2],
-            },
-          },
+          ...defaultNarrative,
+          ...(narrativeOverride ?? {}),
         },
         outputText: "Narrative completed.",
         rawResponse: { id: "resp_narrative", output: [], usage: {} },
@@ -572,5 +584,31 @@ describe("createAccountPlanService", () => {
     });
 
     await expect(service.generateAccountPlan(stub.context)).resolves.toContain("OPENAI_API_KEY");
+  });
+
+  it("persists a usable account plan when optional narrative sections are missing", async () => {
+    const stub = createRepositoryStub();
+    const service = createAccountPlanService({
+      repository: stub.repository,
+      openAIClient: createOpenAIStub([], {
+        objectionsAndRebuttals: [],
+        pilotPlan: null,
+        expansionScenarios: {
+          low: null,
+          base: null,
+          high: null,
+        },
+      }),
+    });
+
+    const message = await service.generateAccountPlan(stub.context);
+
+    expect(message).toContain("usable account plan");
+    expect(stub.context.run.accountPlan?.overallAccountMotion.recommendedMotion).toBe("hybrid");
+    expect(stub.context.run.accountPlan?.pilotPlan).toBeNull();
+    expect(stub.context.run.accountPlan?.objectionsAndRebuttals).toHaveLength(0);
+    expect(stub.context.run.accountPlan?.expansionScenarios.base).toBeNull();
+    expect(stub.events.some((event) => event.eventType === "fallback_applied")).toBe(true);
+    expect(stub.events.some((event) => event.eventType === "account_plan.completed")).toBe(true);
   });
 });

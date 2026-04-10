@@ -11,8 +11,12 @@ export type StoredPipelineStepState = {
   attemptCount: number;
   startedAt: string | null;
   completedAt: string | null;
+  lastAttemptedAt: string | null;
+  lastDeliveryCount: number | null;
   errorCode: string | null;
   errorMessage: string | null;
+  fallbackApplied: boolean;
+  retryExhausted: boolean;
 };
 
 export type StoredPipelineState = {
@@ -107,8 +111,12 @@ export function createInitialPipelineState(): StoredPipelineState {
           attemptCount: 0,
           startedAt: null,
           completedAt: null,
+          lastAttemptedAt: null,
+          lastDeliveryCount: null,
           errorCode: null,
           errorMessage: null,
+          fallbackApplied: false,
+          retryExhausted: false,
         },
       ]),
     ) as StoredPipelineState["steps"],
@@ -144,8 +152,12 @@ export function normalizePipelineState(
       attemptCount: current.attemptCount ?? 0,
       startedAt: current.startedAt ?? null,
       completedAt: current.completedAt ?? null,
+      lastAttemptedAt: current.lastAttemptedAt ?? null,
+      lastDeliveryCount: current.lastDeliveryCount ?? null,
       errorCode: current.errorCode ?? null,
       errorMessage: current.errorMessage ?? null,
+      fallbackApplied: current.fallbackApplied ?? false,
+      retryExhausted: current.retryExhausted ?? false,
     };
   }
 
@@ -164,8 +176,12 @@ export function serializePipelineProgress(state: StoredPipelineState): ReportRun
     attemptCount: state.steps[step.key]?.attemptCount ?? 0,
     startedAt: state.steps[step.key]?.startedAt ?? null,
     completedAt: state.steps[step.key]?.completedAt ?? null,
+    lastAttemptedAt: state.steps[step.key]?.lastAttemptedAt ?? null,
+    lastDeliveryCount: state.steps[step.key]?.lastDeliveryCount ?? null,
     errorCode: state.steps[step.key]?.errorCode ?? null,
     errorMessage: state.steps[step.key]?.errorMessage ?? null,
+    fallbackApplied: state.steps[step.key]?.fallbackApplied ?? false,
+    retryExhausted: state.steps[step.key]?.retryExhausted ?? false,
   }));
 
   const completedSteps = steps.filter((step) => step.status === "completed").length;

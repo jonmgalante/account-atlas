@@ -16,10 +16,20 @@ export class PipelineStepError extends Error {
 }
 
 export function getPipelineErrorDetails(error: unknown) {
+  const cause =
+    error instanceof Error
+      ? error.cause instanceof Error
+        ? error.cause.message
+        : typeof error.cause === "string"
+          ? error.cause
+          : null
+      : null;
+
   if (error instanceof PipelineStepError) {
     return {
       code: error.code,
       message: error.message,
+      cause,
     };
   }
 
@@ -27,11 +37,13 @@ export function getPipelineErrorDetails(error: unknown) {
     return {
       code: "PIPELINE_STEP_FAILED",
       message: error.message,
+      cause,
     };
   }
 
   return {
     code: "PIPELINE_STEP_FAILED",
     message: "The pipeline step failed with an unknown error.",
+    cause: null,
   };
 }

@@ -1,7 +1,7 @@
 import type { ResearchSummary } from "@/lib/types/research";
 import type { SourceType } from "@/lib/source";
 
-export type ReportLifecycleStatus = "queued" | "running" | "ready" | "failed";
+export type ReportLifecycleStatus = "queued" | "running" | "ready" | "ready_with_limited_coverage" | "failed";
 export type MotionRecommendation = "workspace" | "api_platform" | "hybrid" | "undetermined";
 export type ReportArtifactType = "markdown" | "pdf" | "structured_json" | "source_bundle";
 export type ReportReuseReason = "recent_completed" | "in_progress" | "recent_failed" | null;
@@ -69,8 +69,12 @@ export type ReportRunStep = {
   attemptCount: number;
   startedAt: string | null;
   completedAt: string | null;
+  lastAttemptedAt: string | null;
+  lastDeliveryCount: number | null;
   errorCode: string | null;
   errorMessage: string | null;
+  fallbackApplied: boolean;
+  retryExhausted: boolean;
 };
 
 export type ReportRunProgress = {

@@ -10,6 +10,29 @@ const shortListItemSchema = z.string().min(1).max(180);
 const mediumListItemSchema = z.string().min(1).max(260);
 const longTextSchema = z.string().min(1).max(600);
 const motionRecommendationSchema = z.enum(["workspace", "api_platform", "hybrid"]);
+const pilotPlanSchema = z.object({
+  objective: z.string().min(1).max(420),
+  recommendedMotion: motionRecommendationSchema,
+  scope: z.string().min(1).max(420),
+  successMetrics: z.array(shortListItemSchema).min(2).max(8),
+  phases: z.array(
+    z.object({
+      name: z.string().min(1).max(140),
+      duration: z.string().min(1).max(120),
+      goals: z.array(shortListItemSchema).min(1).max(6),
+      deliverables: z.array(shortListItemSchema).min(1).max(6),
+    }),
+  ).min(3).max(5),
+  dependencies: z.array(shortListItemSchema).min(1).max(8),
+  risks: z.array(shortListItemSchema).min(1).max(8),
+  evidenceSourceIds: sourceIdListSchema,
+});
+const expansionScenarioSchema = z.object({
+  summary: longTextSchema,
+  assumptions: z.array(shortListItemSchema).min(1).max(6),
+  expectedOutcomes: z.array(shortListItemSchema).min(1).max(6),
+  evidenceSourceIds: sourceIdListSchema,
+});
 
 export const useCaseScorecardSchema = z.object({
   businessValue: confidenceScoreSchema,
@@ -40,7 +63,7 @@ export const candidateUseCaseGenerationSchema = z.object({
       openQuestions: z.array(mediumListItemSchema).min(1).max(8),
       scorecard: useCaseScorecardSchema,
     }),
-  ).min(12).max(15),
+  ).min(3).max(15),
 });
 
 export const accountPlanNarrativeSchema = z.object({
@@ -65,50 +88,19 @@ export const accountPlanNarrativeSchema = z.object({
       rebuttal: z.string().min(1).max(420),
       evidenceSourceIds: sourceIdListSchema,
     }),
-  ).min(4).max(8),
+  ).max(8),
   discoveryQuestions: z.array(
     z.object({
       question: z.string().min(1).max(240),
       whyItMatters: z.string().min(1).max(320),
       evidenceSourceIds: sourceIdListSchema,
     }),
-  ).min(6).max(12),
-  pilotPlan: z.object({
-    objective: z.string().min(1).max(420),
-    recommendedMotion: motionRecommendationSchema,
-    scope: z.string().min(1).max(420),
-    successMetrics: z.array(shortListItemSchema).min(2).max(8),
-    phases: z.array(
-      z.object({
-        name: z.string().min(1).max(140),
-        duration: z.string().min(1).max(120),
-        goals: z.array(shortListItemSchema).min(1).max(6),
-        deliverables: z.array(shortListItemSchema).min(1).max(6),
-      }),
-    ).min(3).max(5),
-    dependencies: z.array(shortListItemSchema).min(1).max(8),
-    risks: z.array(shortListItemSchema).min(1).max(8),
-    evidenceSourceIds: sourceIdListSchema,
-  }),
+  ).max(12),
+  pilotPlan: pilotPlanSchema.nullable(),
   expansionScenarios: z.object({
-    low: z.object({
-      summary: longTextSchema,
-      assumptions: z.array(shortListItemSchema).min(1).max(6),
-      expectedOutcomes: z.array(shortListItemSchema).min(1).max(6),
-      evidenceSourceIds: sourceIdListSchema,
-    }),
-    base: z.object({
-      summary: longTextSchema,
-      assumptions: z.array(shortListItemSchema).min(1).max(6),
-      expectedOutcomes: z.array(shortListItemSchema).min(1).max(6),
-      evidenceSourceIds: sourceIdListSchema,
-    }),
-    high: z.object({
-      summary: longTextSchema,
-      assumptions: z.array(shortListItemSchema).min(1).max(6),
-      expectedOutcomes: z.array(shortListItemSchema).min(1).max(6),
-      evidenceSourceIds: sourceIdListSchema,
-    }),
+    low: expansionScenarioSchema.nullable(),
+    base: expansionScenarioSchema.nullable(),
+    high: expansionScenarioSchema.nullable(),
   }),
 });
 

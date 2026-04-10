@@ -42,8 +42,20 @@ export const entityResolutionSchema = z.object({
   sourceIds: sourceIdListSchema,
 });
 
+const externalEntityResolutionSchema = z.object({
+  companyName: z.string().min(1).max(200),
+  canonicalDomain: z.string().min(1).max(255),
+  archetype: z.string().min(1).max(120),
+  businessModel: z.string().min(1).max(160).nullable(),
+  industry: z.string().min(1).max(160).nullable(),
+  publicCompany: z.boolean().nullable(),
+  headquarters: z.string().min(1).max(160).nullable(),
+  confidence: confidenceScoreSchema,
+  sourceUrls: sourceUrlListSchema,
+});
+
 export const externalSourceEnrichmentSchema = z.object({
-  entityResolution: entityResolutionSchema,
+  entityResolution: externalEntityResolutionSchema,
   discoveredSources: z.array(
     z.object({
       url: sourceUrlSchema,

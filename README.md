@@ -34,9 +34,9 @@ cp .env.example .env.local
 4. Generate or apply migrations.
 
 ```bash
-pnpm preflight
 pnpm db:generate
 pnpm db:migrate
+pnpm preflight
 ```
 
 5. Start the app.
@@ -116,7 +116,7 @@ See [.env.example](/Users/jongalante/Desktop/account-atlas/.env.example) for the
 - Generated SQL migrations live in [drizzle](/Users/jongalante/Desktop/account-atlas/drizzle).
 - CLI database commands read `DATABASE_URL` from the shell first, then `.env`, then `.env.local`.
 - Use `pnpm db:doctor` to confirm the target database, key tables, and Drizzle migration state without printing secrets.
-- Use `pnpm preflight` for the same readiness check with a shorter command during local setup and deploy debugging.
+- Use `pnpm preflight` before demos or manual testing. It checks env/config readiness, database/migration state, queue mode, OpenAI presence, crawl/export configuration, and runs the deterministic report smoke matrix.
 - Regenerate migration files after schema edits:
 
 ```bash
@@ -159,10 +159,25 @@ pnpm db:generate
 ## Validation Commands
 
 ```bash
+pnpm preflight
 pnpm lint
 pnpm typecheck
 pnpm test
 ```
+
+## Reliability Checks
+
+- `pnpm preflight`
+  Runs the practical readiness gate for demos and manual QA:
+  - env/config consistency
+  - DB connectivity and migration state
+  - queue mode or local inline fallback readiness
+  - OpenAI presence for research/synthesis
+  - crawl budget sanity
+  - export dependency readiness
+  - deterministic smoke coverage for the major pipeline failure modes
+- `pnpm report:smoke`
+  Runs the focused deterministic test matrix without the config/DB checks.
 
 ## Local Smoke Test
 

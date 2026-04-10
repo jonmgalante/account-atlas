@@ -42,6 +42,24 @@ export const retryReportRunQueueMessage: RetryHandler = (error, metadata) => {
     return { acknowledge: true };
   }
 
+  if (error instanceof PipelineStepError && error.code === "PIPELINE_RUN_FAILED") {
+    logServerEvent("warn", "queue.report_run.ack_terminal_failure", {
+      messageId: metadata.messageId,
+      deliveryCount: metadata.deliveryCount,
+      error,
+    });
+    return { acknowledge: true };
+  }
+
+  if (error instanceof PipelineStepError && error.code === "PIPELINE_RUN_ALREADY_ACTIVE") {
+    logServerEvent("warn", "queue.report_run.ack_duplicate_active", {
+      messageId: metadata.messageId,
+      deliveryCount: metadata.deliveryCount,
+      error,
+    });
+    return { acknowledge: true };
+  }
+
   const delaySeconds = Math.min(300, 2 ** Math.min(metadata.deliveryCount, 6));
   logServerEvent("warn", "queue.report_run.retry_scheduled", {
     messageId: metadata.messageId,

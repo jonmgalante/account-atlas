@@ -103,6 +103,12 @@ function createRepositoryStub() {
     async updateRunAccountPlan({ accountPlan }) {
       context.run.accountPlan = accountPlan;
     },
+    async claimRunStepExecution() {
+      throw new Error("Not needed");
+    },
+    async touchRunHeartbeat() {
+      return;
+    },
     async updateRunStepState() {
       throw new Error("Not needed");
     },
@@ -319,7 +325,7 @@ function createOpenAIStub(
               publicCompany: false,
               headquarters: "San Francisco, California",
               confidence: 92,
-              sourceIds: [1],
+              sourceUrls: ["https://news.example.com/openai-expands-enterprise"],
             },
             discoveredSources: [
               {
@@ -544,5 +550,51 @@ describe("createResearchPipelineService", () => {
     await expect(service.enrichExternalSources(stub.context)).resolves.toContain("OPENAI_API_KEY");
     await expect(service.buildFactBase(stub.context)).resolves.toContain("OPENAI_API_KEY");
     await expect(service.generateResearchSummary(stub.context)).resolves.toContain("OPENAI_API_KEY");
+  });
+
+  it("falls back to domain-based public-web enrichment when first-party crawl sources are missing", async () => {
+    const stub = createRepositoryStub();
+    stub.sources.splice(0, stub.sources.length);
+    const telemetry = {
+      parseCalls: [] as Array<{
+        schemaName: string;
+        tools?: Array<Record<string, unknown>>;
+        include?: Array<"web_search_call.action.sources" | "file_search_call.results">;
+        timeoutMs?: number;
+        maxAttempts?: number;
+      }>,
+      createVectorStoreCalls: 0,
+      uploadFileCalls: 0,
+      attachFileCalls: 0,
+    };
+    const service = createResearchPipelineService({
+      repository: stub.repository,
+      openAIClient: createOpenAIStub(telemetry),
+    });
+
+    const enrichMessage = await service.enrichExternalSources(stub.context);
+
+    expect(enrichMessage).toContain("after first-party site coverage stayed limited");
+    expect(stub.sources).toHaveLength(1);
+    expect(stub.events.some((event) => event.eventType === "research.entity_resolution.fallback")).toBe(true);
+    expect(telemetry.parseCalls).toEqual([
+      {
+        schemaName: "external_source_enrichment",
+        tools: [
+          {
+            type: "web_search",
+            search_context_size: "high",
+            user_location: {
+              type: "approximate",
+              country: "US",
+              timezone: "America/New_York",
+            },
+          },
+        ],
+        include: ["web_search_call.action.sources"],
+        timeoutMs: 120_000,
+        maxAttempts: 1,
+      },
+    ]);
   });
 });

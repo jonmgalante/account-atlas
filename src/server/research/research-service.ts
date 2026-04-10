@@ -226,6 +226,38 @@ function buildExternalEnrichmentPrompt(context: StoredRunContext, companyName: s
   });
 }
 
+function deriveCompanyNameFromDomain(canonicalDomain: string) {
+  const rootLabel = normalizeCanonicalDomain(canonicalDomain).split(".")[0] ?? canonicalDomain;
+
+  return rootLabel
+    .split(/[-_]+/)
+    .filter(Boolean)
+    .map((segment) => {
+      if (!/[aeiou]/i.test(segment) && segment.length <= 4) {
+        return segment.toUpperCase();
+      }
+
+      return segment.charAt(0).toUpperCase() + segment.slice(1);
+    })
+    .join(" ");
+}
+
+function summarizeSourceCoverage(sources: PersistedSource[], canonicalDomain: string) {
+  const firstPartySources = sources.filter((source) => source.canonicalDomain === canonicalDomain);
+  const externalSources = sources.length - firstPartySources.length;
+  const htmlLikeSources = sources.filter((source) => !source.mimeType?.includes("pdf")).length;
+  const pdfSources = sources.filter((source) => source.mimeType?.includes("pdf")).length;
+
+  return {
+    totalSources: sources.length,
+    firstPartySources: firstPartySources.length,
+    externalSources,
+    htmlLikeSources,
+    pdfSources,
+    firstPartyCoverage: firstPartySources.length >= 2 ? "usable" : firstPartySources.length > 0 ? "limited" : "thin",
+  };
+}
+
 function buildFactNormalizationPrompt(context: StoredRunContext, sources: PersistedSource[]) {
   return compactJson({
     companyUrl: context.report.normalizedInputUrl,
@@ -364,29 +396,80 @@ export function createResearchPipelineService(dependencies: ResearchServiceDepen
       }
 
       const sources = await repository.listSourcesByRunId(context.run.id);
+      const sourceCoverage = summarizeSourceCoverage(sources, context.report.canonicalDomain);
+
+      await repository.appendRunEvent({
+        reportId: context.report.id,
+        runId: context.run.id,
+        level: sourceCoverage.firstPartyCoverage === "usable" ? "info" : "warning",
+        eventType: "research.source_coverage.summary",
+        stepKey: "enrich_external_sources",
+        message:
+          sourceCoverage.firstPartyCoverage === "usable"
+            ? `Source coverage includes ${sourceCoverage.firstPartySources} first-party sources and ${sourceCoverage.externalSources} external sources before enrichment.`
+            : "First-party source coverage is limited, so Account Atlas will lean more heavily on verified public-web enrichment.",
+        metadata: sourceCoverage,
+      });
+
       await vectorStoreManager.ensureRunVectorStore(context, sources, {
         syncSources: false,
       });
 
-      const entityResolution = await openAIClient.parseStructuredOutput({
-        model: OPENAI_EXTRACTION_MODEL,
-        instructions:
-          "Resolve the company identity from the provided crawl sources. Use only evidence grounded in the source registry. Never invent a source ID.",
-        input: buildEntityResolutionPrompt(context, sources),
-        schema: entityResolutionSchema,
-        schemaName: "entity_resolution",
-        maxOutputTokens: 1_500,
-        timeoutMs: ENTITY_RESOLUTION_TIMEOUT_MS,
-        maxAttempts: RESEARCH_OPENAI_MAX_ATTEMPTS,
-      });
+      let resolvedCompanyName = deriveCompanyNameFromDomain(context.report.canonicalDomain);
 
-      await appendStructuredDebugEvent(repository, context, "research.entity_resolution.completed", entityResolution);
+      if (sources.length > 0) {
+        try {
+          const entityResolution = await openAIClient.parseStructuredOutput({
+            model: OPENAI_EXTRACTION_MODEL,
+            instructions:
+              "Resolve the company identity from the provided crawl sources. Use only evidence grounded in the source registry. Never invent a source ID.",
+            input: buildEntityResolutionPrompt(context, sources),
+            schema: entityResolutionSchema,
+            schemaName: "entity_resolution",
+            maxOutputTokens: 1_500,
+            timeoutMs: ENTITY_RESOLUTION_TIMEOUT_MS,
+            maxAttempts: RESEARCH_OPENAI_MAX_ATTEMPTS,
+          });
+
+          resolvedCompanyName = entityResolution.parsed.companyName;
+          await appendStructuredDebugEvent(repository, context, "research.entity_resolution.completed", entityResolution);
+        } catch (error) {
+          await repository.appendRunEvent({
+            reportId: context.report.id,
+            runId: context.run.id,
+            level: "warning",
+            eventType: "research.entity_resolution.fallback",
+            stepKey: "enrich_external_sources",
+            message:
+              "First-party sources were too thin to fully resolve company identity, so Account Atlas continued with domain-based enrichment.",
+            metadata: {
+              fallbackCompanyName: resolvedCompanyName,
+              errorMessage: error instanceof Error ? error.message : "Unknown entity-resolution failure.",
+              sourceCount: sources.length,
+            },
+          });
+        }
+      } else {
+        await repository.appendRunEvent({
+          reportId: context.report.id,
+          runId: context.run.id,
+          level: "warning",
+          eventType: "research.entity_resolution.fallback",
+          stepKey: "enrich_external_sources",
+          message:
+            "No first-party crawl sources were available, so Account Atlas continued with domain-based public-web enrichment.",
+          metadata: {
+            fallbackCompanyName: resolvedCompanyName,
+            sourceCount: 0,
+          },
+        });
+      }
 
       const enrichment = await openAIClient.parseStructuredOutput({
         model: OPENAI_EXTRACTION_MODEL,
         instructions:
           "Find current public research signals beyond the company site. Use authoritative sources first, never fabricate a source, and return only URLs supported by the web search tool in this response.",
-        input: buildExternalEnrichmentPrompt(context, entityResolution.parsed.companyName, sources),
+        input: buildExternalEnrichmentPrompt(context, resolvedCompanyName, sources),
         schema: externalSourceEnrichmentSchema,
         schemaName: "external_source_enrichment",
         tools: [WEB_SEARCH_TOOL],
@@ -445,7 +528,28 @@ export function createResearchPipelineService(dependencies: ResearchServiceDepen
         }
       }
 
-      return `Resolved ${entityResolution.parsed.companyName} and stored ${persistedExternalSources} external sources (${dedupedExternalSources} deduped).`;
+      const totalSourcesAfterEnrichment = sources.length + persistedExternalSources;
+
+      await repository.appendRunEvent({
+        reportId: context.report.id,
+        runId: context.run.id,
+        level: totalSourcesAfterEnrichment > 0 ? "info" : "warning",
+        eventType: "research.source_coverage.summary",
+        stepKey: "enrich_external_sources",
+        message:
+          totalSourcesAfterEnrichment > 0
+            ? `Source coverage after enrichment includes ${totalSourcesAfterEnrichment} persisted sources.`
+            : "Source coverage remained too thin after enrichment, so later synthesis may stay limited.",
+        metadata: {
+          dedupedExternalSources,
+          persistedExternalSources,
+          totalSourcesAfterEnrichment,
+        },
+      });
+
+      return sourceCoverage.firstPartyCoverage === "thin"
+        ? `Stored ${persistedExternalSources} external sources (${dedupedExternalSources} deduped) after first-party site coverage stayed limited.`
+        : `Resolved ${enrichment.parsed.entityResolution.companyName} and stored ${persistedExternalSources} external sources (${dedupedExternalSources} deduped).`;
     },
 
     async buildFactBase(context: StoredRunContext) {
@@ -469,6 +573,25 @@ export function createResearchPipelineService(dependencies: ResearchServiceDepen
       }
 
       const sources = await repository.listSourcesByRunId(context.run.id);
+      if (!sources.length) {
+        await repository.replaceFactsForRun({
+          reportId: context.report.id,
+          runId: context.run.id,
+          facts: [],
+        });
+
+        await repository.appendRunEvent({
+          reportId: context.report.id,
+          runId: context.run.id,
+          level: "warning",
+          eventType: "research.fact_base.skipped",
+          stepKey: "build_fact_base",
+          message: "Source coverage remained too thin to build a reliable fact base.",
+        });
+
+        return "Skipped fact normalization because source coverage remained too thin.";
+      }
+
       const sourceRegistry = buildSourceRegistry(sources);
       const validSourceIds = new Set(sourceRegistry.map((source) => source.sourceId));
       const factResponse = await openAIClient.parseStructuredOutput({
@@ -528,6 +651,20 @@ export function createResearchPipelineService(dependencies: ResearchServiceDepen
 
       const sources = await repository.listSourcesByRunId(context.run.id);
       const facts = await repository.listFactsByRunId(context.run.id);
+
+      if (!sources.length) {
+        await repository.appendRunEvent({
+          reportId: context.report.id,
+          runId: context.run.id,
+          level: "warning",
+          eventType: "research.summary.skipped",
+          stepKey: "generate_account_plan",
+          message: "Source coverage remained too thin to synthesize a reliable research summary.",
+        });
+
+        return "Skipped research summary synthesis because source coverage remained too thin.";
+      }
+
       const sourceUrlIndex = buildSourceUrlIndex(sources);
 
       const summaryResponse = await openAIClient.parseStructuredOutput({
@@ -550,7 +687,7 @@ export function createResearchPipelineService(dependencies: ResearchServiceDepen
       const validSourceIds = new Set(sources.map((source) => source.id));
       const normalizedSummary = sanitizeResearchSummary(
         {
-        ...summary,
+          ...summary,
           sourceIds: [...new Set([...summary.sourceIds, ...linkedSourceIds])],
         },
         validSourceIds,

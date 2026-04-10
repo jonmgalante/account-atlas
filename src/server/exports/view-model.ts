@@ -1,6 +1,7 @@
 import "server-only";
 
 import { REPORT_SECTION_DEFINITIONS } from "@/lib/report-sections";
+import { getReadyReportSectionKeys } from "@/lib/report-completion";
 import type { ReportSectionKey } from "@/lib/types/report";
 import type { ResearchSummary } from "@/lib/types/research";
 import type {
@@ -226,23 +227,10 @@ function buildSectionAssessments(run: StoredRunContext["run"]): ExportSectionAss
   const confidenceBySection = new Map(
     run.researchSummary?.confidenceBySection.map((entry) => [entry.section, entry]) ?? [],
   );
-  const readySectionKeys = new Set<ReportSectionKey>();
-
-  if (run.researchSummary) {
-    readySectionKeys.add("company-brief");
-    readySectionKeys.add("fact-base");
-    readySectionKeys.add("ai-maturity-signals");
-  }
-
-  if (run.accountPlan) {
-    readySectionKeys.add("prioritized-use-cases");
-    readySectionKeys.add("recommended-motion");
-    readySectionKeys.add("stakeholder-hypotheses");
-    readySectionKeys.add("objections");
-    readySectionKeys.add("discovery-questions");
-    readySectionKeys.add("pilot-plan");
-    readySectionKeys.add("expansion-scenarios");
-  }
+  const readySectionKeys = getReadyReportSectionKeys({
+    researchSummary: run.researchSummary,
+    accountPlan: run.accountPlan,
+  });
 
   return REPORT_SECTION_DEFINITIONS.map((section) => {
     const confidence = confidenceBySection.get(section.key);

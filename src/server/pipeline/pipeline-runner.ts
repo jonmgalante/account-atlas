@@ -1,10 +1,16 @@
 import "server-only";
 
 import type { PipelineStepKey, PipelineStepStatus } from "@/lib/types/report";
+import {
+  evaluateSellerFacingReport,
+  formatMinimumViableRequirement,
+  formatOptionalCoverageGap,
+} from "@/lib/report-completion";
 import { createAccountPlanService } from "@/server/account-plan/account-plan-service";
 import { createCompanySiteCrawler } from "@/server/crawl/company-site-crawler";
 import { createReportExportService } from "@/server/exports/export-service";
 import { logServerEvent } from "@/server/observability/logger";
+import { recordPipelineEvent, summarizeRunCoverage } from "@/server/pipeline/pipeline-observability";
 import { createResearchPipelineService } from "@/server/research/research-service";
 import type { ReportRepository, StoredRunContext } from "@/server/repositories/report-repository";
 import { drizzleReportRepository } from "@/server/repositories/report-repository";
@@ -40,7 +46,12 @@ type StepHandlerContext = {
   repository: ReportRepository;
 };
 
-type StepHandler = (context: StepHandlerContext) => Promise<string>;
+type StepOutcome = {
+  message: string;
+  fallbackApplied?: boolean;
+};
+
+type StepHandler = (context: StepHandlerContext) => Promise<StepOutcome>;
 
 const STEP_TIMEOUT_MS: Record<PipelineStepKey, number> = {
   normalize_target: 10_000,
@@ -63,6 +74,9 @@ const STEP_MAX_ATTEMPTS: Record<PipelineStepKey, number> = {
   export_pdf: 2,
   finalize_report: 2,
 };
+
+const STEP_HEARTBEAT_INTERVAL_MS = 15_000;
+const STEP_ACTIVE_HEARTBEAT_THRESHOLD_MS = STEP_HEARTBEAT_INTERVAL_MS * 3;
 
 function clonePipelineState(state: StoredPipelineState): StoredPipelineState {
   return {
@@ -93,37 +107,47 @@ function createStepHandlers(
     exportOperation: () => Promise<string>;
   }) {
     try {
-      return await input.exportOperation();
+      return {
+        message: await input.exportOperation(),
+        fallbackApplied: false,
+      };
     } catch (error) {
       const artifactLabel = input.artifactType === "pdf" ? "PDF" : "Markdown";
-      const errorMessage = error instanceof Error ? error.message : `Unknown ${artifactLabel} export error.`;
+      const errorDetails = getPipelineErrorDetails(error);
+      const fallbackMessage = `${artifactLabel} export failed for this run, but the report can still be shared from the web view${input.artifactType === "pdf" ? " and any available Markdown export" : ""}.`;
 
-      await input.repository.appendRunEvent({
-        reportId: input.report.id,
-        runId: input.run.id,
+      await recordPipelineEvent({
+        repository: input.repository,
+        context: {
+          report: input.report,
+          run: input.run,
+        },
         level: "warning",
-        eventType: `artifact.${input.artifactType}.failed`,
+        eventType: "fallback_applied",
         stepKey: input.stepKey,
-        message: `${artifactLabel} export failed, but the report can still complete with the source-backed web view: ${errorMessage}`,
+        message: `${artifactLabel} export failed, but the report can still complete with the source-backed web view: ${errorDetails.message}`,
         metadata: {
-          errorMessage,
+          artifactType: input.artifactType,
+          fallbackType: "artifact_export",
+          fallbackMessage,
+          errorCode: errorDetails.code,
+          errorMessage: errorDetails.message,
+          errorCause: errorDetails.cause,
         },
       });
 
-      logServerEvent("warn", "artifact.export.failed", {
-        shareId: input.report.shareId,
-        runId: input.run.id,
-        artifactType: input.artifactType,
-        error,
-      });
-
-      return `${artifactLabel} export failed for this run, but the report can still be shared from the web view${input.artifactType === "pdf" ? " and any available Markdown export" : ""}.`;
+      return {
+        message: fallbackMessage,
+        fallbackApplied: true,
+      };
     }
   }
 
   return {
     async normalize_target({ report }) {
-      return `Normalized the target URL and confirmed ${report.canonicalDomain} as the canonical domain.`;
+      return {
+        message: `Normalized the target URL and confirmed ${report.canonicalDomain} as the canonical domain.`,
+      };
     },
 
     async crawl_company_site({ report, run }) {
@@ -132,28 +156,42 @@ function createStepHandlers(
         run,
       });
 
-      return `Crawled ${crawlResult.pagesFetched} pages and stored ${crawlResult.htmlPagesStored + crawlResult.pdfSourcesStored} first-party sources (${crawlResult.pdfSourcesStored} PDFs, ${crawlResult.dedupedSources} deduped).`;
+      return {
+        message:
+          crawlResult.coverageStatus === "broad"
+            ? `Crawled ${crawlResult.pagesFetched} pages and stored ${crawlResult.htmlPagesStored + crawlResult.pdfSourcesStored} first-party sources (${crawlResult.pdfSourcesStored} PDFs, ${crawlResult.dedupedSources} deduped).`
+            : crawlResult.coverageStatus === "limited"
+              ? `Crawled ${crawlResult.pagesFetched} pages and stored ${crawlResult.htmlPagesStored + crawlResult.pdfSourcesStored} first-party sources (${crawlResult.pdfSourcesStored} PDFs, ${crawlResult.dedupedSources} deduped). First-party coverage was limited, so Account Atlas continued with a lighter source plan and public-web research.`
+              : "First-party crawl coverage remained thin, so Account Atlas continued with public-web research and any verified company sources it could preserve.",
+        fallbackApplied: crawlResult.coverageStatus !== "broad",
+      };
     },
 
     async enrich_external_sources({ report, run }) {
-      return researchService.enrichExternalSources({
-        report,
-        run,
-      });
+      return {
+        message: await researchService.enrichExternalSources({
+          report,
+          run,
+        }),
+      };
     },
 
     async build_fact_base({ report, run }) {
-      return researchService.buildFactBase({
-        report,
-        run,
-      });
+      return {
+        message: await researchService.buildFactBase({
+          report,
+          run,
+        }),
+      };
     },
 
     async generate_account_plan({ report, run }) {
-      return accountPlanService.generateAccountPlan({
-        report,
-        run,
-      });
+      return {
+        message: await accountPlanService.generateAccountPlan({
+          report,
+          run,
+        }),
+      };
     },
 
     async export_markdown({ report, run, repository }) {
@@ -189,16 +227,41 @@ function createStepHandlers(
     async finalize_report({ run, repository }) {
       const artifacts = await repository.listArtifactsByRunId(run.id);
       const availableArtifactTypes = new Set(artifacts.map((artifact) => artifact.artifactType));
+      const contract = evaluateSellerFacingReport({
+        researchSummary: run.researchSummary,
+        accountPlan: run.accountPlan,
+      });
+      const limitedCoverageAreas: string[] = [...contract.optionalGapKeys.map(formatOptionalCoverageGap)];
+
+      if (!availableArtifactTypes.has("markdown")) {
+        limitedCoverageAreas.push("Markdown export");
+      }
+
+      if (!availableArtifactTypes.has("pdf")) {
+        limitedCoverageAreas.push("PDF export");
+      }
+
+      if (!contract.isSatisfied) {
+        throw new PipelineStepError(
+          "REPORT_CORE_CONTRACT_INCOMPLETE",
+          `The minimum viable seller-facing report is incomplete: ${contract.missingRequirements.map(formatMinimumViableRequirement).join(", ")}.`,
+        );
+      }
 
       if (run.accountPlan) {
-        return `The report run completed with a source-backed account plan, ${run.accountPlan.topUseCases.length} prioritized use cases, and downloadable ${availableArtifactTypes.has("pdf") ? "Markdown/PDF" : availableArtifactTypes.has("markdown") ? "Markdown" : "web"} exports.`;
+        return {
+          message:
+            limitedCoverageAreas.length > 0
+              ? `The report run completed with a usable source-backed account brief and limited coverage in ${limitedCoverageAreas.join(", ")}.`
+              : `The report run completed with a source-backed account plan, ${run.accountPlan.topUseCases.length} prioritized use cases, and downloadable ${availableArtifactTypes.has("pdf") ? "Markdown/PDF" : availableArtifactTypes.has("markdown") ? "Markdown" : "web"} exports.`,
+          fallbackApplied: limitedCoverageAreas.length > 0,
+        };
       }
 
-      if (run.researchSummary) {
-        return "The report run completed with a research summary, but account-plan synthesis did not persist final recommendations.";
-      }
-
-      return "The report run completed, but no source-backed research artifacts were persisted for the final share view.";
+      throw new PipelineStepError(
+        "REPORT_CORE_CONTRACT_INCOMPLETE",
+        "The minimum viable seller-facing report was not persisted before finalization.",
+      );
     },
   };
 }
@@ -217,6 +280,89 @@ function getStepStateLabel(status: PipelineStepStatus) {
       return "failed";
     default:
       return "pending";
+  }
+}
+
+function getActiveRunStatusForStep(stepKey: PipelineStepKey): StoredRunContext["run"]["status"] {
+  return stepKey === "finalize_report" ? "synthesizing" : getPipelineStepRunStatus(stepKey);
+}
+
+function getPipelineStepRunStatus(stepKey: PipelineStepKey): StoredRunContext["run"]["status"] {
+  return REPORT_PIPELINE_STEPS.find((step) => step.key === stepKey)?.runStatus ?? "synthesizing";
+}
+
+function isReportFinalized(status: StoredRunContext["report"]["status"]) {
+  return status === "ready" || status === "ready_with_limited_coverage" || status === "failed";
+}
+
+function isRunFinalized(status: StoredRunContext["run"]["status"]) {
+  return status === "completed" || status === "failed" || status === "cancelled";
+}
+
+function startStepHeartbeat(input: {
+  repository: ReportRepository;
+  context: StoredRunContext;
+  stepKey: PipelineStepKey;
+}) {
+  const intervalId = setInterval(() => {
+    void input.repository.touchRunHeartbeat({
+      reportId: input.context.report.id,
+      runId: input.context.run.id,
+      stepKey: input.stepKey,
+    });
+  }, STEP_HEARTBEAT_INTERVAL_MS);
+
+  return () => {
+    clearInterval(intervalId);
+  };
+}
+
+async function resolveFallbackForExhaustedStep(input: {
+  repository: ReportRepository;
+  context: StoredRunContext;
+  stepKey: PipelineStepKey;
+}) {
+  switch (input.stepKey) {
+    case "crawl_company_site": {
+      const sources = await input.repository.listSourcesByRunId(input.context.run.id);
+
+      if (!sources.length) {
+        return null;
+      }
+
+      return `Crawl company site exhausted retries. Continuing with ${sources.length} previously persisted sources and limited first-party coverage.`;
+    }
+    case "enrich_external_sources":
+      return "External enrichment exhausted retries. Continuing with first-party research only.";
+    case "build_fact_base": {
+      const sources = await input.repository.listSourcesByRunId(input.context.run.id);
+
+      if (!sources.length) {
+        return null;
+      }
+
+      return `Fact-base extraction exhausted retries. Continuing with ${sources.length} persisted sources; downstream synthesis may have limited coverage.`;
+    }
+    case "generate_account_plan": {
+      const refreshed = await input.repository.findRunContextById(input.context.run.id);
+
+      if (!refreshed?.run.accountPlan) {
+        return null;
+      }
+
+      const contract = evaluateSellerFacingReport({
+        researchSummary: refreshed.run.researchSummary,
+        accountPlan: refreshed.run.accountPlan,
+      });
+
+      if (!contract.isSatisfied) {
+        return null;
+      }
+
+      return "Account-plan synthesis exhausted retries after the core seller-facing brief was already persisted. Continuing without optional sections.";
+    }
+    default:
+      return null;
   }
 }
 
@@ -245,7 +391,7 @@ export function createReportPipelineRunner(dependencies: PipelineRunnerDependenc
         throw new PipelineRunNotFoundError(input.runId);
       }
 
-      if (runContext.run.status === "completed" || runContext.report.status === "ready") {
+      if (isRunFinalized(runContext.run.status) || isReportFinalized(runContext.report.status)) {
         return;
       }
 
@@ -259,81 +405,119 @@ export function createReportPipelineRunner(dependencies: PipelineRunnerDependenc
       });
 
       for (const step of REPORT_PIPELINE_STEPS) {
-        const currentState = normalizePipelineState(currentContext.run.pipelineState);
-        const stepState = currentState.steps[step.key];
+        const claimContext = await repository.findRunContextById(input.runId);
 
-        if (stepState?.status === "completed") {
+        if (!claimContext) {
+          throw new PipelineRunNotFoundError(input.runId);
+        }
+
+        if (isRunFinalized(claimContext.run.status) || isReportFinalized(claimContext.report.status)) {
+          return;
+        }
+
+        const claimResult = await repository.claimRunStepExecution({
+          runId: input.runId,
+          stepKey: step.key,
+          stepRunStatus: getActiveRunStatusForStep(step.key),
+          progressPercent: getPipelineProgressBefore(step.key),
+          statusMessage: `${step.label} started.`,
+          executionMode: claimContext.run.executionMode,
+          queueMessageId: input.queueMessageId ?? claimContext.run.queueMessageId,
+          reportStatus: "running",
+          activeHeartbeatThresholdMs: STEP_ACTIVE_HEARTBEAT_THRESHOLD_MS,
+          startedAt: claimContext.run.startedAt ?? new Date(),
+          deliveryCount: input.deliveryCount ?? 1,
+        });
+
+        if (!claimResult) {
+          throw new PipelineRunNotFoundError(input.runId);
+        }
+
+        if (claimResult.outcome === "finalized") {
+          return;
+        }
+
+        if (claimResult.outcome === "already_completed") {
+          currentContext = claimResult.context;
           continue;
         }
 
-        if (stepState?.status === "failed" && (stepState.attemptCount ?? 0) >= STEP_MAX_ATTEMPTS[step.key]) {
-          const error = new PipelineStepError(
-            "PIPELINE_STEP_CIRCUIT_OPEN",
-            `${step.label} exceeded ${STEP_MAX_ATTEMPTS[step.key]} attempts and is blocked for this run.`,
-          );
-
-          logServerEvent("warn", "pipeline.step.circuit_open", {
-            shareId: currentContext.report.shareId,
-            runId: currentContext.run.id,
-            stepKey: step.key,
-            attemptCount: stepState.attemptCount,
+        if (claimResult.outcome === "duplicate_delivery") {
+          await recordPipelineEvent({
+            repository,
+            context: claimResult.context,
+            level: "warning",
+            eventType: "duplicate_delivery_detected",
+            stepKey: claimResult.activeStepKey,
+            message: `Duplicate queue delivery detected while ${claimResult.activeStepKey.replaceAll("_", " ")} is already running.`,
+            metadata: {
+              activeStepKey: claimResult.activeStepKey,
+              deliveryCount: input.deliveryCount ?? 1,
+              lastHeartbeatAt: claimResult.lastHeartbeatAt?.toISOString() ?? null,
+              queueMessageId: input.queueMessageId ?? claimResult.context.run.queueMessageId,
+              trigger: input.trigger,
+            },
           });
 
-          throw error;
+          throw new PipelineStepError(
+            "PIPELINE_RUN_ALREADY_ACTIVE",
+            `Another worker is already running ${claimResult.activeStepKey.replaceAll("_", " ")} for this report.`,
+          );
         }
 
-        const runningState = clonePipelineState(currentState);
-        runningState.currentStepKey = step.key;
-        runningState.steps[step.key] = {
-          status: "running",
-          attemptCount: (stepState?.attemptCount ?? 0) + 1,
-          startedAt: stepState?.startedAt ?? new Date().toISOString(),
-          completedAt: stepState?.completedAt ?? null,
-          errorCode: null,
-          errorMessage: null,
-        };
-
+        currentContext = claimResult.context;
+        const runningState = normalizePipelineState(currentContext.run.pipelineState);
         const startedAt = currentContext.run.startedAt ?? new Date();
-        const runningMessage = `${step.label} started (${runningState.steps[step.key].attemptCount} ${runningState.steps[step.key].attemptCount === 1 ? "attempt" : "attempts"}).`;
+        const runningStepState = runningState.steps[step.key];
+        const runningMessage = `${step.label} started (${runningStepState.attemptCount} ${runningStepState.attemptCount === 1 ? "attempt" : "attempts"}).`;
 
-        await repository.updateRunStepState({
-          reportId: currentContext.report.id,
-          runId: currentContext.run.id,
-          status: step.runStatus,
-          stepKey: step.key,
-          progressPercent: getPipelineProgressBefore(step.key),
-          statusMessage: runningMessage,
-          executionMode: currentContext.run.executionMode,
-          pipelineState: runningState,
-          queueMessageId: input.queueMessageId ?? currentContext.run.queueMessageId,
-          startedAt,
-          reportStatus: "running",
-        });
+        if (claimResult.claimMode === "resumed") {
+          await recordPipelineEvent({
+            repository,
+            context: currentContext,
+            level: "warning",
+            eventType: "resumed_step_execution",
+            stepKey: step.key,
+            message: `${step.label} resumed from ${claimResult.resumedFromStatus ?? "unknown"} state.`,
+            metadata: {
+              attemptCount: runningStepState.attemptCount,
+              deliveryCount: input.deliveryCount ?? 1,
+              previousStepStatus: claimResult.resumedFromStatus,
+              queueMessageId: input.queueMessageId ?? currentContext.run.queueMessageId,
+              stepLabel: step.label,
+              trigger: input.trigger,
+            },
+          });
+        }
 
-        await repository.appendRunEvent({
-          reportId: currentContext.report.id,
-          runId: currentContext.run.id,
+        await recordPipelineEvent({
+          repository,
+          context: currentContext,
           level: "info",
-          eventType: "pipeline.step.started",
+          eventType: "step_started",
           stepKey: step.key,
           message: runningMessage,
           metadata: {
-            trigger: input.trigger,
+            attemptCount: runningStepState.attemptCount,
             deliveryCount: input.deliveryCount ?? 1,
+            maxAttempts: STEP_MAX_ATTEMPTS[step.key],
+            queueMessageId: input.queueMessageId ?? currentContext.run.queueMessageId,
+            resumedFromStatus: claimResult.resumedFromStatus,
+            stepLabel: step.label,
             stepStatus: getStepStateLabel("running"),
+            trigger: input.trigger,
           },
         });
 
-        logServerEvent("info", "pipeline.step.started", {
-          shareId: currentContext.report.shareId,
-          runId: currentContext.run.id,
-          stepKey: step.key,
-          attemptCount: runningState.steps[step.key].attemptCount,
-          trigger: input.trigger,
-        });
-
+        let stopHeartbeat: (() => void) | null = null;
         try {
-          const completedMessage = await withTimeout(
+          stopHeartbeat = startStepHeartbeat({
+            repository,
+            context: currentContext,
+            stepKey: step.key,
+          });
+
+          const stepOutcome = await withTimeout(
             () =>
               stepHandlers[step.key]({
                 report: currentContext.report,
@@ -346,18 +530,32 @@ export function createReportPipelineRunner(dependencies: PipelineRunnerDependenc
             },
           );
 
+          stopHeartbeat?.();
+          stopHeartbeat = null;
+
           const completedState = clonePipelineState(runningState);
           completedState.currentStepKey = null;
           completedState.steps[step.key] = {
             ...completedState.steps[step.key],
             status: "completed",
             completedAt: new Date().toISOString(),
+            lastAttemptedAt: new Date().toISOString(),
+            lastDeliveryCount: input.deliveryCount ?? 1,
             errorCode: null,
             errorMessage: null,
+            fallbackApplied: stepOutcome.fallbackApplied ?? false,
+            retryExhausted: false,
           };
 
           const isFinalStep = step.key === "finalize_report";
           const completedAt = isFinalStep ? new Date() : null;
+          const artifacts = isFinalStep ? await repository.listArtifactsByRunId(currentContext.run.id) : [];
+          const coverage = isFinalStep ? summarizeRunCoverage(currentContext, artifacts) : null;
+          const finalReportStatus = isFinalStep
+            ? coverage?.hasLimitedCoverage
+              ? "ready_with_limited_coverage"
+              : "ready"
+            : "running";
 
           await repository.updateRunStepState({
             reportId: currentContext.report.id,
@@ -365,35 +563,33 @@ export function createReportPipelineRunner(dependencies: PipelineRunnerDependenc
             status: isFinalStep ? "completed" : step.runStatus,
             stepKey: isFinalStep ? null : step.key,
             progressPercent: step.progressPercent,
-            statusMessage: completedMessage,
+            statusMessage: stepOutcome.message,
             executionMode: currentContext.run.executionMode,
             pipelineState: completedState,
             queueMessageId: input.queueMessageId ?? currentContext.run.queueMessageId,
             startedAt,
             completedAt,
-            reportStatus: isFinalStep ? "ready" : "running",
+            reportStatus: finalReportStatus,
             reportCompletedAt: completedAt,
           });
 
-          await repository.appendRunEvent({
-            reportId: currentContext.report.id,
-            runId: currentContext.run.id,
+          await recordPipelineEvent({
+            repository,
+            context: currentContext,
             level: "info",
-            eventType: "pipeline.step.completed",
+            eventType: "step_succeeded",
             stepKey: step.key,
-            message: completedMessage,
+            message: stepOutcome.message,
             metadata: {
-              trigger: input.trigger,
-              stepStatus: getStepStateLabel("completed"),
+              attemptCount: completedState.steps[step.key].attemptCount,
+              deliveryCount: input.deliveryCount ?? 1,
+              fallbackApplied: stepOutcome.fallbackApplied ?? false,
               progressPercent: step.progressPercent,
+              queueMessageId: input.queueMessageId ?? currentContext.run.queueMessageId,
+              stepLabel: step.label,
+              stepStatus: getStepStateLabel("completed"),
+              trigger: input.trigger,
             },
-          });
-
-          logServerEvent("info", "pipeline.step.completed", {
-            shareId: currentContext.report.shareId,
-            runId: currentContext.run.id,
-            stepKey: step.key,
-            progressPercent: step.progressPercent,
           });
 
           const refreshedContext = await repository.findRunContextById(input.runId);
@@ -405,12 +601,29 @@ export function createReportPipelineRunner(dependencies: PipelineRunnerDependenc
           currentContext = refreshedContext;
 
           if (isFinalStep) {
-            logServerEvent("info", "pipeline.run.completed", {
-              shareId: refreshedContext.report.shareId,
-              runId: refreshedContext.run.id,
+            const refreshedArtifacts = await repository.listArtifactsByRunId(refreshedContext.run.id);
+            const refreshedCoverage = summarizeRunCoverage(refreshedContext, refreshedArtifacts);
+
+            await recordPipelineEvent({
+              repository,
+              context: refreshedContext,
+              level: refreshedCoverage.hasLimitedCoverage ? "warning" : "info",
+              eventType: refreshedCoverage.hasLimitedCoverage ? "run_completed_with_limited_coverage" : "run_completed",
+              stepKey: step.key,
+              message: stepOutcome.message,
+              metadata: {
+                availableArtifactTypes: refreshedCoverage.availableArtifactTypes,
+                coverageLimitations: refreshedCoverage.coverageLimitations,
+                deliveryCount: input.deliveryCount ?? 1,
+                queueMessageId: input.queueMessageId ?? refreshedContext.run.queueMessageId,
+                trigger: input.trigger,
+              },
             });
           }
         } catch (error) {
+          stopHeartbeat?.();
+          stopHeartbeat = null;
+
           const errorDetails = getPipelineErrorDetails(error);
           const attemptCount = runningState.steps[step.key].attemptCount;
           const maxAttempts = STEP_MAX_ATTEMPTS[step.key];
@@ -418,12 +631,16 @@ export function createReportPipelineRunner(dependencies: PipelineRunnerDependenc
 
           if (retryable) {
             const retryingState = clonePipelineState(runningState);
-            retryingState.currentStepKey = step.key;
+            retryingState.currentStepKey = null;
             retryingState.steps[step.key] = {
               ...retryingState.steps[step.key],
               status: "retrying",
+              lastAttemptedAt: new Date().toISOString(),
+              lastDeliveryCount: input.deliveryCount ?? 1,
               errorCode: errorDetails.code,
               errorMessage: errorDetails.message,
+              fallbackApplied: false,
+              retryExhausted: false,
             };
 
             const retryingMessage = `${step.label} hit a retryable error. Account Atlas will retry automatically (${attemptCount}/${maxAttempts} attempts used): ${errorDetails.message}`;
@@ -431,7 +648,7 @@ export function createReportPipelineRunner(dependencies: PipelineRunnerDependenc
             await repository.updateRunStepState({
               reportId: currentContext.report.id,
               runId: currentContext.run.id,
-              status: step.runStatus,
+              status: getActiveRunStatusForStep(step.key),
               stepKey: step.key,
               progressPercent: getPipelineProgressBefore(step.key),
               statusMessage: retryingMessage,
@@ -444,38 +661,144 @@ export function createReportPipelineRunner(dependencies: PipelineRunnerDependenc
               reportStatus: "running",
             });
 
-            await repository.appendRunEvent({
-              reportId: currentContext.report.id,
-              runId: currentContext.run.id,
+            await recordPipelineEvent({
+              repository,
+              context: currentContext,
               level: "warning",
-              eventType: "pipeline.step.retry_scheduled",
+              eventType: "retrying",
               stepKey: step.key,
               message: retryingMessage,
               metadata: {
-                trigger: input.trigger,
-                stepStatus: getStepStateLabel("retrying"),
-                errorCode: errorDetails.code,
                 attemptCount,
+                deliveryCount: input.deliveryCount ?? 1,
+                errorCause: errorDetails.cause,
+                errorCode: errorDetails.code,
+                errorMessage: errorDetails.message,
                 maxAttempts,
+                queueMessageId: input.queueMessageId ?? currentContext.run.queueMessageId,
+                stepLabel: step.label,
+                stepStatus: getStepStateLabel("retrying"),
+                trigger: input.trigger,
+              },
+            });
+          } else {
+            await recordPipelineEvent({
+              repository,
+              context: currentContext,
+              level: "error",
+              eventType: "retry_exhausted",
+              stepKey: step.key,
+              message: `${step.label} exhausted ${maxAttempts} attempts.`,
+              metadata: {
+                attemptCount,
+                deliveryCount: input.deliveryCount ?? 1,
+                errorCause: errorDetails.cause,
+                errorCode: errorDetails.code,
+                errorMessage: errorDetails.message,
+                maxAttempts,
+                queueMessageId: input.queueMessageId ?? currentContext.run.queueMessageId,
+                stepLabel: step.label,
+                trigger: input.trigger,
               },
             });
 
-            logServerEvent("warn", "pipeline.step.retry_scheduled", {
-              shareId: currentContext.report.shareId,
-              runId: currentContext.run.id,
+            const fallbackMessage = await resolveFallbackForExhaustedStep({
+              repository,
+              context: currentContext,
               stepKey: step.key,
-              errorCode: errorDetails.code,
-              attemptCount,
-              maxAttempts,
             });
-          } else {
+
+            if (fallbackMessage) {
+              const fallbackState = clonePipelineState(runningState);
+              fallbackState.currentStepKey = null;
+              fallbackState.steps[step.key] = {
+                ...fallbackState.steps[step.key],
+                status: "completed",
+                completedAt: new Date().toISOString(),
+                lastAttemptedAt: new Date().toISOString(),
+                lastDeliveryCount: input.deliveryCount ?? 1,
+                errorCode: errorDetails.code,
+                errorMessage: errorDetails.message,
+                fallbackApplied: true,
+                retryExhausted: true,
+              };
+
+              await repository.updateRunStepState({
+                reportId: currentContext.report.id,
+                runId: currentContext.run.id,
+                status: getActiveRunStatusForStep(step.key),
+                stepKey: null,
+                progressPercent: step.progressPercent,
+                statusMessage: fallbackMessage,
+                executionMode: currentContext.run.executionMode,
+                pipelineState: fallbackState,
+                queueMessageId: input.queueMessageId ?? currentContext.run.queueMessageId,
+                startedAt,
+                errorCode: null,
+                errorMessage: null,
+                reportStatus: "running",
+              });
+
+              await recordPipelineEvent({
+                repository,
+                context: currentContext,
+                level: "warning",
+                eventType: "fallback_applied",
+                stepKey: step.key,
+                message: fallbackMessage,
+                metadata: {
+                  attemptCount,
+                  deliveryCount: input.deliveryCount ?? 1,
+                  errorCause: errorDetails.cause,
+                  errorCode: errorDetails.code,
+                  errorMessage: errorDetails.message,
+                  maxAttempts,
+                  queueMessageId: input.queueMessageId ?? currentContext.run.queueMessageId,
+                  stepLabel: step.label,
+                  trigger: input.trigger,
+                },
+              });
+
+              await recordPipelineEvent({
+                repository,
+                context: currentContext,
+                level: "info",
+                eventType: "step_succeeded",
+                stepKey: step.key,
+                message: fallbackMessage,
+                metadata: {
+                  attemptCount,
+                  deliveryCount: input.deliveryCount ?? 1,
+                  fallbackApplied: true,
+                  progressPercent: step.progressPercent,
+                  queueMessageId: input.queueMessageId ?? currentContext.run.queueMessageId,
+                  stepLabel: step.label,
+                  stepStatus: getStepStateLabel("completed"),
+                  trigger: input.trigger,
+                },
+              });
+
+              const refreshedContext = await repository.findRunContextById(input.runId);
+
+              if (!refreshedContext) {
+                throw new PipelineRunNotFoundError(input.runId);
+              }
+
+              currentContext = refreshedContext;
+              continue;
+            }
+
             const failedState = clonePipelineState(runningState);
-            failedState.currentStepKey = step.key;
+            failedState.currentStepKey = null;
             failedState.steps[step.key] = {
               ...failedState.steps[step.key],
               status: "failed",
+              lastAttemptedAt: new Date().toISOString(),
+              lastDeliveryCount: input.deliveryCount ?? 1,
               errorCode: errorDetails.code,
               errorMessage: errorDetails.message,
+              fallbackApplied: false,
+              retryExhausted: true,
             };
 
             const failedMessage = `${step.label} failed: ${errorDetails.message}`;
@@ -499,35 +822,61 @@ export function createReportPipelineRunner(dependencies: PipelineRunnerDependenc
               reportFailedAt: failedAt,
             });
 
-            await repository.appendRunEvent({
-              reportId: currentContext.report.id,
-              runId: currentContext.run.id,
+            await recordPipelineEvent({
+              repository,
+              context: currentContext,
               level: "error",
-              eventType: "pipeline.step.failed",
+              eventType: "step_failed",
               stepKey: step.key,
               message: failedMessage,
               metadata: {
-                trigger: input.trigger,
-                stepStatus: getStepStateLabel("failed"),
-                errorCode: errorDetails.code,
                 attemptCount,
+                deliveryCount: input.deliveryCount ?? 1,
+                errorCause: errorDetails.cause,
+                errorCode: errorDetails.code,
+                errorMessage: errorDetails.message,
                 maxAttempts,
+                queueMessageId: input.queueMessageId ?? currentContext.run.queueMessageId,
+                stepLabel: step.label,
+                stepStatus: getStepStateLabel("failed"),
+                trigger: input.trigger,
               },
             });
 
-            logServerEvent("error", "pipeline.step.failed", {
-              shareId: currentContext.report.shareId,
-              runId: currentContext.run.id,
+            const failedContext = await repository.findRunContextById(input.runId);
+
+            if (!failedContext) {
+              throw new PipelineRunNotFoundError(input.runId);
+            }
+
+            const artifacts = await repository.listArtifactsByRunId(failedContext.run.id);
+            const coverage = summarizeRunCoverage(failedContext, artifacts);
+
+            await recordPipelineEvent({
+              repository,
+              context: failedContext,
+              level: "error",
+              eventType: "run_failed",
               stepKey: step.key,
-              errorCode: errorDetails.code,
-              error,
+              message: failedMessage,
+              metadata: {
+                attemptCount,
+                deliveryCount: input.deliveryCount ?? 1,
+                errorCause: errorDetails.cause,
+                errorCode: errorDetails.code,
+                errorMessage: errorDetails.message,
+                maxAttempts,
+                partialDataAvailable: coverage.usableDataAvailable,
+                availableArtifactTypes: coverage.availableArtifactTypes,
+                coverageLimitations: coverage.coverageLimitations,
+                queueMessageId: input.queueMessageId ?? failedContext.run.queueMessageId,
+                stepLabel: step.label,
+                trigger: input.trigger,
+              },
             });
 
-            logServerEvent("error", "pipeline.run.failed", {
-              shareId: currentContext.report.shareId,
-              runId: currentContext.run.id,
-              stepKey: step.key,
-              errorCode: errorDetails.code,
+            throw new PipelineStepError("PIPELINE_RUN_FAILED", failedMessage, {
+              cause: error,
             });
           }
 

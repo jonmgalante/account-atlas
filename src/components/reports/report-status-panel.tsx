@@ -52,7 +52,13 @@ function normalizeVisibleCopy(text: string) {
     .replaceAll("report pipeline", "report build");
 }
 
-function getRunNarrative(currentRun: NonNullable<ReportStatusShell["currentRun"]>) {
+function getRunNarrative(status: ReportStatusShell) {
+  const currentRun = status.currentRun;
+
+  if (!currentRun) {
+    return "Build progress will appear here as soon as status reporting starts.";
+  }
+
   const currentStepState = currentRun.stepKey
     ? currentRun.progress.steps.find((step) => step.key === currentRun.stepKey)?.status
     : null;
@@ -71,6 +77,10 @@ function getRunNarrative(currentRun: NonNullable<ReportStatusShell["currentRun"]
         ? `${currentRun.stepLabel} is currently running. Newly persisted sources, facts, and report sections appear here as they are committed.`
         : "The brief is actively collecting and synthesizing public-web evidence.";
     case "completed":
+      if (status.report.status === "ready_with_limited_coverage") {
+        return "The latest run finished with limited coverage. Review the build log, warnings, and any missing exports before treating this as a full account brief.";
+      }
+
       return "The latest run finished successfully. The AI account brief reflects the persisted public-web evidence gathered for this report.";
     case "failed":
       return "The latest run stopped before all sections completed. Review the build log and any partial output below to see what finished.";
@@ -128,7 +138,7 @@ export function ReportStatusPanel({ status, isPolling, errorMessage }: ReportSta
             </Badge>
           </div>
         </div>
-        <p className="max-w-3xl text-sm leading-7 text-foreground/70">{getRunNarrative(currentRun)}</p>
+        <p className="max-w-3xl text-sm leading-7 text-foreground/70">{getRunNarrative(status)}</p>
         <div className="grid gap-3 sm:grid-cols-3">
           <div className="rounded-[1.5rem] border border-border/70 bg-background/72 p-4">
             <div className="text-[11px] font-medium uppercase tracking-[0.22em] text-muted-foreground">Current step</div>

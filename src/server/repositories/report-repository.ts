@@ -18,7 +18,12 @@ import {
   stakeholders,
   useCases,
 } from "@/server/db/schema";
-import { createInitialPipelineState, type StoredPipelineStepState } from "@/server/pipeline/pipeline-steps";
+import {
+  createInitialPipelineState,
+  normalizePipelineState,
+  type StoredPipelineState,
+  type StoredPipelineStepState,
+} from "@/server/pipeline/pipeline-steps";
 
 const reportColumns = {
   id: reports.id,
@@ -126,7 +131,7 @@ const artifactColumns = {
 export type PersistedReport = {
   id: number;
   shareId: string;
-  status: "queued" | "running" | "ready" | "failed";
+  status: "queued" | "running" | "ready" | "ready_with_limited_coverage" | "failed";
   normalizedInputUrl: string;
   canonicalDomain: string;
   companyName: string | null;
@@ -286,6 +291,44 @@ export type RunStepUpdateInput = {
   reportFailedAt?: Date | null;
 };
 
+export type ClaimRunStepExecutionInput = {
+  runId: number;
+  stepKey: PipelineStepKey;
+  stepRunStatus: PersistedRun["status"];
+  progressPercent: number;
+  statusMessage: string;
+  executionMode?: PipelineExecutionMode;
+  queueMessageId?: string | null;
+  reportStatus?: PersistedReport["status"];
+  activeHeartbeatThresholdMs: number;
+  startedAt?: Date | null;
+  deliveryCount?: number | null;
+};
+
+export type ClaimRunStepExecutionResult =
+  | {
+      outcome: "claimed";
+      context: StoredRunContext;
+      claimMode: "fresh" | "resumed";
+      resumedFromStatus: StoredPipelineStepState["status"] | null;
+      activeStepKey: PipelineStepKey | null;
+    }
+  | {
+      outcome: "already_completed";
+      context: StoredRunContext;
+    }
+  | {
+      outcome: "duplicate_delivery";
+      context: StoredRunContext;
+      activeStepKey: PipelineStepKey;
+      lastHeartbeatAt: Date | null;
+    }
+  | {
+      outcome: "finalized";
+      context: StoredRunContext;
+      reason: "report_finalized" | "run_finalized";
+    };
+
 export type UpsertCrawledSourceInput = {
   reportId: number;
   runId: number;
@@ -396,6 +439,12 @@ export type ReportRepository = {
     runId: number;
     accountPlan: FinalAccountPlan;
   }): Promise<void>;
+  claimRunStepExecution(input: ClaimRunStepExecutionInput): Promise<ClaimRunStepExecutionResult | null>;
+  touchRunHeartbeat(input: {
+    reportId: number;
+    runId: number;
+    stepKey: PipelineStepKey;
+  }): Promise<void>;
   updateRunStepState(input: RunStepUpdateInput): Promise<void>;
   appendRunEvent(input: RunEventInput): Promise<void>;
   upsertCrawledSource(input: UpsertCrawledSourceInput): Promise<UpsertCrawledSourceResult>;
@@ -432,6 +481,22 @@ async function findRecentEventsByRunId(runId: number, limit = 8) {
     .limit(limit);
 
   return rows.reverse();
+}
+
+function isReportFinalized(status: PersistedReport["status"]) {
+  return status === "ready" || status === "ready_with_limited_coverage" || status === "failed";
+}
+
+function isRunFinalized(status: PersistedRun["status"]) {
+  return status === "completed" || status === "failed" || status === "cancelled";
+}
+
+function isStepLeaseFresh(lastHeartbeatAt: Date | null, activeHeartbeatThresholdMs: number) {
+  if (!lastHeartbeatAt) {
+    return false;
+  }
+
+  return lastHeartbeatAt.getTime() >= Date.now() - activeHeartbeatThresholdMs;
 }
 
 function mergeStoragePointers(
@@ -673,6 +738,153 @@ export const drizzleReportRepository: ReportRepository = {
         updatedAt: new Date(),
       })
       .where(and(eq(reportRuns.id, runId), eq(reportRuns.reportId, reportId)));
+  },
+
+  async claimRunStepExecution(input) {
+    const db = getDb();
+    const now = new Date();
+
+    return db.transaction(async (tx) => {
+      const [row] = await tx
+        .select({
+          report: reportColumns,
+          run: reportRunColumns,
+        })
+        .from(reportRuns)
+        .innerJoin(reports, eq(reportRuns.reportId, reports.id))
+        .where(eq(reportRuns.id, input.runId))
+        .limit(1)
+        .for("update");
+
+      if (!row) {
+        return null;
+      }
+
+      if (isReportFinalized(row.report.status)) {
+        return {
+          outcome: "finalized",
+          context: row,
+          reason: "report_finalized",
+        } satisfies ClaimRunStepExecutionResult;
+      }
+
+      if (isRunFinalized(row.run.status)) {
+        return {
+          outcome: "finalized",
+          context: row,
+          reason: "run_finalized",
+        } satisfies ClaimRunStepExecutionResult;
+      }
+
+      const currentState = normalizePipelineState(row.run.pipelineState);
+      const stepState = currentState.steps[input.stepKey];
+      const activeStepKey =
+        currentState.currentStepKey && currentState.steps[currentState.currentStepKey]?.status === "running"
+          ? currentState.currentStepKey
+          : null;
+
+      if (stepState?.status === "completed") {
+        return {
+          outcome: "already_completed",
+          context: row,
+        } satisfies ClaimRunStepExecutionResult;
+      }
+
+      if (
+        activeStepKey &&
+        isStepLeaseFresh(row.run.lastHeartbeatAt, input.activeHeartbeatThresholdMs)
+      ) {
+        return {
+          outcome: "duplicate_delivery",
+          context: row,
+          activeStepKey,
+          lastHeartbeatAt: row.run.lastHeartbeatAt,
+        } satisfies ClaimRunStepExecutionResult;
+      }
+
+      const runningState: StoredPipelineState = {
+        currentStepKey: input.stepKey,
+        steps: {
+          ...currentState.steps,
+          [input.stepKey]: {
+            ...currentState.steps[input.stepKey],
+            status: "running",
+            attemptCount: (stepState?.attemptCount ?? 0) + 1,
+            startedAt: stepState?.startedAt ?? (input.startedAt ?? now).toISOString(),
+            completedAt: null,
+            lastAttemptedAt: now.toISOString(),
+            lastDeliveryCount: input.deliveryCount ?? null,
+            errorCode: null,
+            errorMessage: null,
+            fallbackApplied: false,
+            retryExhausted: false,
+          },
+        },
+      };
+      const attemptCount = runningState.steps[input.stepKey].attemptCount;
+      const runningMessage = `${input.statusMessage} (${attemptCount} ${attemptCount === 1 ? "attempt" : "attempts"}).`;
+
+      const [updatedRun] = await tx
+        .update(reportRuns)
+        .set({
+          status: input.stepRunStatus,
+          executionMode: input.executionMode,
+          progressPercent: input.progressPercent,
+          stepKey: input.stepKey,
+          statusMessage: runningMessage,
+          pipelineState: runningState,
+          queueMessageId: input.queueMessageId,
+          errorCode: null,
+          errorMessage: null,
+          startedAt: input.startedAt ?? row.run.startedAt ?? now,
+          lastHeartbeatAt: now,
+          completedAt: null,
+          failedAt: null,
+          updatedAt: now,
+        })
+        .where(and(eq(reportRuns.id, row.run.id), eq(reportRuns.reportId, row.report.id)))
+        .returning(reportRunColumns);
+
+      const [updatedReport] = await tx
+        .update(reports)
+        .set({
+          status: input.reportStatus ?? "running",
+          completedAt: null,
+          failedAt: null,
+          updatedAt: now,
+        })
+        .where(eq(reports.id, row.report.id))
+        .returning(reportColumns);
+
+      return {
+        outcome: "claimed",
+        context: {
+          report: updatedReport,
+          run: updatedRun,
+        },
+        claimMode:
+          stepState?.status === "retrying" || stepState?.status === "failed" || stepState?.status === "running"
+            ? "resumed"
+            : "fresh",
+        resumedFromStatus:
+          stepState?.status === "retrying" || stepState?.status === "failed" || stepState?.status === "running"
+            ? stepState.status
+            : null,
+        activeStepKey,
+      } satisfies ClaimRunStepExecutionResult;
+    });
+  },
+
+  async touchRunHeartbeat({ reportId, runId, stepKey }) {
+    const db = getDb();
+
+    await db
+      .update(reportRuns)
+      .set({
+        lastHeartbeatAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(and(eq(reportRuns.id, runId), eq(reportRuns.reportId, reportId), eq(reportRuns.stepKey, stepKey)));
   },
 
   async updateRunResearchSummary({ reportId, runId, researchSummary, companyName }) {
