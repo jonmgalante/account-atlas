@@ -1,7 +1,5 @@
 import "server-only";
 
-import { createHash } from "node:crypto";
-
 import type {
   AccountPlanUseCase,
   DiscoveryQuestion,
@@ -16,9 +14,9 @@ import {
   formatMinimumViableRequirement,
   formatOptionalCoverageGap,
 } from "@/lib/report-completion";
-import type { PersistedFact, PersistedSource, ReportRepository, StoredRunContext, UpsertArtifactInput } from "@/server/repositories/report-repository";
+import type { FactPacket } from "@/lib/types/research";
+import type { ReportRepository, StoredRunContext } from "@/server/repositories/report-repository";
 import { drizzleReportRepository } from "@/server/repositories/report-repository";
-import { maybeStoreBlobArtifact } from "@/server/storage/blob-store";
 import { OPENAI_SYNTHESIS_MODEL } from "@/server/openai/models";
 import {
   createOpenAIResearchClient,
@@ -27,8 +25,7 @@ import {
 } from "@/server/openai/client";
 import { logServerEvent } from "@/server/observability/logger";
 import { recordPipelineEvent } from "@/server/pipeline/pipeline-observability";
-import { createResearchPipelineService } from "@/server/research/research-service";
-import { buildSourceRegistry } from "@/server/research/source-registry";
+import { buildFactPacket, parseFactPacketArtifact } from "@/server/research/fact-packet";
 import { normalizeUseCaseScorecard, rankAccountPlanUseCases } from "@/server/account-plan/scoring";
 import {
   type AccountPlanNarrativeOutput,
@@ -40,7 +37,6 @@ import {
 type AccountPlanServiceDependencies = {
   repository?: ReportRepository;
   openAIClient?: OpenAIResearchClient;
-  researchService?: ReturnType<typeof createResearchPipelineService>;
 };
 
 const ACCOUNT_PLAN_USE_CASE_TIMEOUT_MS = 150_000;
@@ -79,17 +75,17 @@ function sanitizeSourceIds(sourceIds: number[], validSourceIds: Set<number>) {
   return [...new Set(sourceIds.filter((sourceId) => validSourceIds.has(sourceId)))];
 }
 
-function summarizeSourcesForPrompt(sources: PersistedSource[]) {
-  return buildSourceRegistry(sources).map((source) => ({
+function summarizeSourcesForPrompt(packet: FactPacket) {
+  return packet.sourceRegistry.map((source) => ({
     ...source,
     summary: source.summary ?? "No normalized summary was stored for this source.",
   }));
 }
 
-function summarizeFactsForPrompt(facts: PersistedFact[]) {
-  return facts.map((fact) => ({
-    id: fact.id,
-    claim: fact.statement,
+function summarizeFactsForPrompt(packet: FactPacket) {
+  return packet.evidence.map((fact) => ({
+    id: fact.factId,
+    claim: fact.claim,
     section: fact.section,
     classification: fact.classification,
     confidence: fact.confidence,
@@ -103,17 +99,22 @@ function summarizeFactsForPrompt(facts: PersistedFact[]) {
 
 function buildCandidateUseCasePrompt(
   context: StoredRunContext,
-  sources: PersistedSource[],
-  facts: PersistedFact[],
-  researchSummary: NonNullable<StoredRunContext["run"]["researchSummary"]>,
+  factPacket: FactPacket,
 ) {
   return compactJson({
     companyUrl: context.report.normalizedInputUrl,
     canonicalDomain: context.report.canonicalDomain,
-    companyName: researchSummary.companyIdentity.companyName,
-    researchSummary,
-    sourceRegistry: summarizeSourcesForPrompt(sources),
-    factBase: summarizeFactsForPrompt(facts),
+    companyName: factPacket.summary.companyIdentity.companyName,
+    researchSummary: factPacket.summary,
+    sourceRegistry: summarizeSourcesForPrompt(factPacket),
+    factBase: summarizeFactsForPrompt(factPacket),
+    factPacket: {
+      briefMode: factPacket.briefMode,
+      sectionCoverage: factPacket.sectionCoverage,
+      evidenceGaps: factPacket.evidenceGaps,
+      researchCompletenessScore: factPacket.researchCompletenessScore,
+      overallConfidence: factPacket.overallConfidence,
+    },
     fixedTaxonomy: [
       "sales",
       "marketing",
@@ -147,18 +148,23 @@ function buildCandidateUseCasePrompt(
 
 function buildAccountPlanNarrativePrompt(
   context: StoredRunContext,
-  sources: PersistedSource[],
-  facts: PersistedFact[],
-  researchSummary: NonNullable<StoredRunContext["run"]["researchSummary"]>,
+  factPacket: FactPacket,
   rankedUseCases: AccountPlanUseCase[],
 ) {
   return compactJson({
     companyUrl: context.report.normalizedInputUrl,
     canonicalDomain: context.report.canonicalDomain,
-    companyName: researchSummary.companyIdentity.companyName,
-    researchSummary,
-    sourceRegistry: summarizeSourcesForPrompt(sources),
-    factBase: summarizeFactsForPrompt(facts),
+    companyName: factPacket.summary.companyIdentity.companyName,
+    researchSummary: factPacket.summary,
+    sourceRegistry: summarizeSourcesForPrompt(factPacket),
+    factBase: summarizeFactsForPrompt(factPacket),
+    factPacket: {
+      briefMode: factPacket.briefMode,
+      sectionCoverage: factPacket.sectionCoverage,
+      evidenceGaps: factPacket.evidenceGaps,
+      researchCompletenessScore: factPacket.researchCompletenessScore,
+      overallConfidence: factPacket.overallConfidence,
+    },
     candidateUseCases: rankedUseCases,
     topUseCases: rankedUseCases.slice(0, 3),
     requirements: {
@@ -167,46 +173,6 @@ function buildAccountPlanNarrativePrompt(
       uncertainty: "When evidence is thin, state that clearly in rationale, open questions, and pilot scope.",
     },
   });
-}
-
-function buildAccountPlanArtifactBundle(input: {
-  reportId: number;
-  runId: number;
-  accountPlan: FinalAccountPlan;
-  researchSummary: NonNullable<StoredRunContext["run"]["researchSummary"]>;
-  facts: PersistedFact[];
-  sources: PersistedSource[];
-}): UpsertArtifactInput {
-  const body = compactJson({
-    accountPlan: input.accountPlan,
-    researchSummary: input.researchSummary,
-    factBase: input.facts.map((fact) => ({
-      id: fact.id,
-      claim: fact.statement,
-      section: fact.section,
-      classification: fact.classification,
-      confidence: fact.confidence,
-      freshness: fact.freshness,
-      sentiment: fact.sentiment,
-      relevance: fact.relevance,
-      sourceIds: fact.sourceIds,
-    })),
-    sourceRegistry: buildSourceRegistry(input.sources),
-  });
-  const contentHash = createHash("sha256").update(body).digest("hex");
-
-  return {
-    reportId: input.reportId,
-    runId: input.runId,
-    artifactType: "structured_json",
-    mimeType: "application/json",
-    fileName: "account-plan.json",
-    contentHash,
-    sizeBytes: Buffer.byteLength(body),
-    storagePointers: {
-      inlineJson: body,
-    },
-  };
 }
 
 async function appendStructuredDebugEvent(
@@ -232,33 +198,37 @@ async function appendStructuredDebugEvent(
   });
 }
 
-async function maybeWriteAccountPlanArtifact(
-  context: StoredRunContext,
+async function loadFactPacket(
   repository: ReportRepository,
-  bundle: UpsertArtifactInput,
-) {
-  const storagePointers = bundle.storagePointers ?? {};
-  const inlineJson = typeof storagePointers.inlineJson === "string" ? storagePointers.inlineJson : null;
+  context: StoredRunContext,
+): Promise<{ factPacket: FactPacket; fallbackApplied: boolean }> {
+  const artifacts = await repository.listArtifactsByRunId(context.run.id);
+  const persistedFactPacket = parseFactPacketArtifact(artifacts);
 
-  if (!inlineJson) {
-    await repository.upsertArtifact(bundle);
-    return;
+  if (persistedFactPacket) {
+    return {
+      factPacket: persistedFactPacket,
+      fallbackApplied: false,
+    };
   }
 
-  const blob = await maybeStoreBlobArtifact({
-    pathname: `reports/${context.report.id}/runs/${context.run.id}/account-plan/account-plan.json`,
-    body: inlineJson,
-    contentType: "application/json",
-    minimumBytes: 0,
-  });
+  const [sources, facts] = await Promise.all([
+    repository.listSourcesByRunId(context.run.id),
+    repository.listFactsByRunId(context.run.id),
+  ]);
 
-  await repository.upsertArtifact({
-    ...bundle,
-    storagePointers: {
-      ...storagePointers,
-      blob,
-    },
-  });
+  if (!sources.length || !facts.length) {
+    throw new Error("Account-plan generation requires a persisted fact packet or enough facts and sources to rebuild one.");
+  }
+
+  return {
+    factPacket: buildFactPacket({
+      context,
+      sources,
+      facts,
+    }),
+    fallbackApplied: true,
+  };
 }
 
 function sanitizeCandidateUseCases(
@@ -481,12 +451,6 @@ function sanitizeAccountPlanNarrative(
 export function createAccountPlanService(dependencies: AccountPlanServiceDependencies = {}) {
   const repository = dependencies.repository ?? drizzleReportRepository;
   const openAIClient = dependencies.openAIClient ?? createOpenAIResearchClient();
-  const researchService =
-    dependencies.researchService ??
-    createResearchPipelineService({
-      repository,
-      openAIClient,
-    });
 
   return {
     async generateAccountPlan(context: StoredRunContext) {
@@ -503,36 +467,25 @@ export function createAccountPlanService(dependencies: AccountPlanServiceDepende
         return "Skipped account-plan synthesis because OPENAI_API_KEY is not configured.";
       }
 
-      let workingContext = context;
+      const workingContext = context;
+      const { factPacket, fallbackApplied: factPacketFallbackApplied } = await loadFactPacket(repository, workingContext);
+      const researchSummary = factPacket.summary;
 
-      if (!workingContext.run.researchSummary) {
-        await researchService.generateResearchSummary(workingContext);
-        const refreshed = await repository.findRunContextById(workingContext.run.id);
-
-        if (!refreshed) {
-          throw new Error(`Report run ${workingContext.run.id} could not be reloaded after research summary synthesis.`);
-        }
-
-        workingContext = refreshed;
+      if (
+        factPacketFallbackApplied ||
+        !workingContext.run.researchSummary ||
+        workingContext.run.researchSummary.companyIdentity.companyName !== researchSummary.companyIdentity.companyName
+      ) {
+        await repository.updateRunResearchSummary({
+          reportId: workingContext.report.id,
+          runId: workingContext.run.id,
+          researchSummary,
+          companyName: researchSummary.companyIdentity.companyName,
+        });
       }
 
-      const researchSummary = workingContext.run.researchSummary;
-
-      if (!researchSummary) {
-        throw new Error("Account-plan generation requires a persisted research summary.");
-      }
-
-      const [sources, facts] = await Promise.all([
-        repository.listSourcesByRunId(workingContext.run.id),
-        repository.listFactsByRunId(workingContext.run.id),
-      ]);
-
-      if (!sources.length) {
-        throw new Error("Account-plan generation requires at least one persisted source.");
-      }
-
-      const validSourceIds = new Set(sources.map((source) => source.id));
-      const candidateUseCaseInput = buildCandidateUseCasePrompt(workingContext, sources, facts, researchSummary);
+      const validSourceIds = new Set(factPacket.sourceRegistry.map((source) => source.sourceId));
+      const candidateUseCaseInput = buildCandidateUseCasePrompt(workingContext, factPacket);
 
       logServerEvent("info", "account_plan.openai.requested", {
         shareId: workingContext.report.shareId,
@@ -540,15 +493,15 @@ export function createAccountPlanService(dependencies: AccountPlanServiceDepende
         operation: "candidate_use_cases",
         timeoutMs: ACCOUNT_PLAN_USE_CASE_TIMEOUT_MS,
         maxOutputTokens: 7_000,
-        sourceCount: sources.length,
-        factCount: facts.length,
+        briefMode: factPacket.briefMode,
+        factCount: factPacket.evidence.length,
         inputChars: candidateUseCaseInput.length,
       });
 
       const useCaseResponse = await openAIClient.parseStructuredOutput({
         model: OPENAI_SYNTHESIS_MODEL,
         instructions:
-          "Generate 12 to 15 evidence-backed enterprise AI use cases from the provided research summary and fact base. Use only source IDs from the registry. Prefer practical, measurable use cases and keep uncertainty explicit when evidence is thin.",
+          "Generate 12 to 15 evidence-backed enterprise AI use cases from the provided fact packet. Use only source IDs from the registry. Prefer practical, measurable use cases and keep uncertainty explicit when evidence is thin.",
         input: candidateUseCaseInput,
         schema: candidateUseCaseGenerationSchema,
         schemaName: "account_plan_candidate_use_cases",
@@ -577,7 +530,7 @@ export function createAccountPlanService(dependencies: AccountPlanServiceDepende
         useCases: rankedUseCases,
       });
 
-      const narrativeInput = buildAccountPlanNarrativePrompt(workingContext, sources, facts, researchSummary, rankedUseCases);
+      const narrativeInput = buildAccountPlanNarrativePrompt(workingContext, factPacket, rankedUseCases);
 
       logServerEvent("info", "account_plan.openai.requested", {
         shareId: workingContext.report.shareId,
@@ -585,8 +538,8 @@ export function createAccountPlanService(dependencies: AccountPlanServiceDepende
         operation: "narrative",
         timeoutMs: ACCOUNT_PLAN_NARRATIVE_TIMEOUT_MS,
         maxOutputTokens: 6_000,
-        sourceCount: sources.length,
-        factCount: facts.length,
+        briefMode: factPacket.briefMode,
+        factCount: factPacket.evidence.length,
         rankedUseCaseCount: rankedUseCases.length,
         inputChars: narrativeInput.length,
       });
@@ -645,45 +598,11 @@ export function createAccountPlanService(dependencies: AccountPlanServiceDepende
         );
       }
 
-      let artifactFallbackApplied = false;
-
-      try {
-        await maybeWriteAccountPlanArtifact(
-          workingContext,
-          repository,
-          buildAccountPlanArtifactBundle({
-            reportId: workingContext.report.id,
-            runId: workingContext.run.id,
-            accountPlan,
-            researchSummary,
-            facts,
-            sources,
-          }),
-        );
-      } catch (error) {
-        artifactFallbackApplied = true;
-
-        const errorMessage = error instanceof Error ? error.message : "Unknown artifact persistence error.";
-
-        await recordPipelineEvent({
-          repository,
-          context: workingContext,
-          level: "warning",
-          eventType: "fallback_applied",
-          stepKey: "generate_account_plan",
-          message: `Structured account-plan artifact persistence failed, but the web report remains usable: ${errorMessage}`,
-          metadata: {
-            fallbackType: "structured_account_plan_artifact",
-            errorMessage,
-          },
-        });
-      }
-
       const optionalGapKeys = [...contract.optionalGapKeys];
       const limitedCoverageAreas: string[] = [...optionalGapKeys.map(formatOptionalCoverageGap)];
 
-      if (artifactFallbackApplied) {
-        limitedCoverageAreas.push("structured JSON artifact");
+      if (factPacketFallbackApplied) {
+        limitedCoverageAreas.push("persisted fact packet");
       }
 
       if (limitedCoverageAreas.length > 0) {
@@ -696,7 +615,8 @@ export function createAccountPlanService(dependencies: AccountPlanServiceDepende
           message: `Core seller-facing sections were persisted, but optional coverage remained limited in ${limitedCoverageAreas.join(", ")}.`,
           metadata: {
             optionalGapKeys,
-            artifactFallbackApplied,
+            factPacketFallbackApplied,
+            briefMode: factPacket.briefMode,
             candidateUseCaseCount: rankedUseCases.length,
           },
         });
@@ -710,6 +630,8 @@ export function createAccountPlanService(dependencies: AccountPlanServiceDepende
         stepKey: "generate_account_plan",
         message: `Stored an account plan with ${rankedUseCases.length} candidate use cases and ${topUseCases.length} prioritized recommendations.`,
         metadata: {
+          briefMode: factPacket.briefMode,
+          factPacketFallbackApplied,
           overallMotion: accountPlan.overallAccountMotion.recommendedMotion,
           optionalGapKeys,
           topUseCases: topUseCases.map((useCase) => ({

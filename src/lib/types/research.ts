@@ -38,6 +38,29 @@ export type CompanyIdentitySummary = {
   sourceIds: number[];
 };
 
+export type FactPacketEvidence = {
+  factId: number;
+  section: ReportSectionKey;
+  classification: "fact" | "inference" | "hypothesis";
+  claim: string;
+  rationale: string | null;
+  confidence: number;
+  freshness: "current" | "recent" | "stale" | "unknown";
+  sentiment: "positive" | "neutral" | "negative" | "mixed" | "unknown";
+  relevance: number;
+  evidenceSnippet: string | null;
+  sourceIds: number[];
+};
+
+export type FactPacketSectionCoverage = {
+  section: ReportSectionKey;
+  status: "covered" | "limited" | "missing";
+  confidence: number;
+  rationale: string;
+  factIds: number[];
+  sourceIds: number[];
+};
+
 export type ResearchSummary = {
   companyIdentity: CompanyIdentitySummary;
   growthPriorities: ResearchLinkedItem[];
@@ -61,6 +84,21 @@ export type ResearchSummary = {
   evidenceGaps: string[];
   overallConfidence: ResearchConfidenceBand;
   sourceIds: number[];
+};
+
+export type FactPacket = {
+  packetType: "fact_packet";
+  packetVersion: 1;
+  briefMode: "standard" | "light";
+  companyIdentity: CompanyIdentitySummary;
+  sourceRegistry: SourceRegistryEntry[];
+  evidence: FactPacketEvidence[];
+  sectionCoverage: FactPacketSectionCoverage[];
+  evidenceGaps: string[];
+  researchCompletenessScore: number;
+  overallConfidence: ResearchConfidenceBand;
+  sourceIds: number[];
+  summary: ResearchSummary;
 };
 
 export type PersistedFactRecord = {

@@ -5,6 +5,7 @@ import type { ResearchSummary } from "@/lib/types/research";
 import type { OpenAIResearchClient } from "@/server/openai/client";
 import { createAccountPlanService } from "@/server/account-plan/account-plan-service";
 import { createInitialPipelineState } from "@/server/pipeline/pipeline-steps";
+import { buildFactPacket } from "@/server/research/fact-packet";
 import type { PersistedSource, ReportRepository, StoredRunContext } from "@/server/repositories/report-repository";
 
 function createResearchSummary(): ResearchSummary {
@@ -111,6 +112,44 @@ function createRepositoryStub() {
       updatedAt: new Date("2026-04-07T12:00:00.000Z"),
     },
   ];
+  const facts = [
+    {
+      id: 1,
+      reportId: 1,
+      runId: 11,
+      sourceId: 1,
+      section: "fact-base" as const,
+      classification: "fact" as const,
+      statement: "OpenAI publicly positions itself as both a platform and enterprise AI provider.",
+      rationale: "This is stated in company materials.",
+      confidence: 92,
+      freshness: "current" as const,
+      sentiment: "neutral" as const,
+      relevance: 95,
+      evidenceSnippet: "OpenAI builds AI models and developer platforms.",
+      sourceIds: [1],
+      createdAt: new Date("2026-04-07T12:00:00.000Z"),
+      updatedAt: new Date("2026-04-07T12:00:00.000Z"),
+    },
+    {
+      id: 2,
+      reportId: 1,
+      runId: 11,
+      sourceId: 2,
+      section: "ai-maturity-signals" as const,
+      classification: "fact" as const,
+      statement: "OpenAI operates a public status page for production services.",
+      rationale: "This suggests mature production operations and external trust expectations.",
+      confidence: 87,
+      freshness: "current" as const,
+      sentiment: "neutral" as const,
+      relevance: 78,
+      evidenceSnippet: "Service status and incident updates.",
+      sourceIds: [2],
+      createdAt: new Date("2026-04-07T12:00:00.000Z"),
+      updatedAt: new Date("2026-04-07T12:00:00.000Z"),
+    },
+  ];
 
   const context: StoredRunContext = {
     report: {
@@ -149,6 +188,12 @@ function createRepositoryStub() {
       failedAt: null,
     },
   };
+  const persistedFactPacket = buildFactPacket({
+    context,
+    sources,
+    facts,
+    briefMode: "standard",
+  });
 
   const repository: ReportRepository = {
     async isShareIdAvailable() {
@@ -170,47 +215,26 @@ function createRepositoryStub() {
       return sources;
     },
     async listFactsByRunId() {
+      return facts;
+    },
+    async listArtifactsByRunId() {
       return [
         {
           id: 1,
           reportId: 1,
           runId: 11,
-          sourceId: 1,
-          section: "fact-base",
-          classification: "fact",
-          statement: "OpenAI publicly positions itself as both a platform and enterprise AI provider.",
-          rationale: "This is stated in company materials.",
-          confidence: 92,
-          freshness: "current",
-          sentiment: "neutral",
-          relevance: 95,
-          evidenceSnippet: "OpenAI builds AI models and developer platforms.",
-          sourceIds: [1],
-          createdAt: new Date("2026-04-07T12:00:00.000Z"),
-          updatedAt: new Date("2026-04-07T12:00:00.000Z"),
-        },
-        {
-          id: 2,
-          reportId: 1,
-          runId: 11,
-          sourceId: 2,
-          section: "ai-maturity-signals",
-          classification: "fact",
-          statement: "OpenAI operates a public status page for production services.",
-          rationale: "This suggests mature production operations and external trust expectations.",
-          confidence: 87,
-          freshness: "current",
-          sentiment: "neutral",
-          relevance: 78,
-          evidenceSnippet: "Service status and incident updates.",
-          sourceIds: [2],
+          artifactType: "structured_json" as const,
+          mimeType: "application/json",
+          fileName: "fact-packet.json",
+          storagePointers: {
+            inlineJson: JSON.stringify(persistedFactPacket),
+          },
+          contentHash: "packet-hash",
+          sizeBytes: 1024,
           createdAt: new Date("2026-04-07T12:00:00.000Z"),
           updatedAt: new Date("2026-04-07T12:00:00.000Z"),
         },
       ];
-    },
-    async listArtifactsByRunId() {
-      return [];
     },
     async findArtifactByShareId() {
       return null;
@@ -543,7 +567,7 @@ describe("createAccountPlanService", () => {
     expect(stub.context.run.accountPlan?.topUseCases.map((useCase) => useCase.priorityRank)).toEqual([1, 2, 3]);
     expect(stub.context.run.accountPlan?.topUseCases[0]?.scorecard.priorityScore).toBe(87.45);
     expect(stub.events.some((event) => event.eventType === "account_plan.completed")).toBe(true);
-    expect(stub.artifacts).toHaveLength(1);
+    expect(stub.artifacts).toHaveLength(0);
     expect(parseCalls).toEqual([
       {
         schemaName: "account_plan_candidate_use_cases",

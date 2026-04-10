@@ -22,6 +22,12 @@ type SourceRule = {
   patterns: RegExp[];
 };
 
+type SourcePlanSeed = {
+  sourceType: SourceType;
+  priority: number;
+  paths: string[];
+};
+
 const SOURCE_RULES: SourceRule[] = [
   { sourceType: "about_page", priority: 880, patterns: [/^\/about(?:\/|$)/i, /^\/company(?:\/|$)/i, /who-we-are/i] },
   {
@@ -60,25 +66,18 @@ const SOURCE_RULES: SourceRule[] = [
   },
 ];
 
-const ROOT_FALLBACKS: Array<{ path: string; sourceType: SourceType; priority: number }> = [
-  { path: "/", sourceType: "company_homepage", priority: 1000 },
-  { path: "/about", sourceType: "about_page", priority: 880 },
-  { path: "/products", sourceType: "product_page", priority: 860 },
-  { path: "/solutions", sourceType: "solutions_page", priority: 840 },
-  { path: "/pricing", sourceType: "pricing_page", priority: 830 },
-  { path: "/customers", sourceType: "customer_page", priority: 820 },
-  { path: "/security", sourceType: "security_page", priority: 810 },
-  { path: "/privacy", sourceType: "privacy_page", priority: 800 },
-  { path: "/docs", sourceType: "docs_page", priority: 790 },
-  { path: "/developers", sourceType: "developer_page", priority: 780 },
-  { path: "/careers", sourceType: "careers_page", priority: 770 },
-  { path: "/blog", sourceType: "blog_page", priority: 760 },
-  { path: "/newsroom", sourceType: "newsroom_page", priority: 750 },
-  { path: "/investors", sourceType: "investor_relations_page", priority: 740 },
-  { path: "/status", sourceType: "status_page", priority: 730 },
-  { path: "/changelog", sourceType: "changelog_page", priority: 720 },
+const SOURCE_PLAN_FALLBACKS: SourcePlanSeed[] = [
+  { paths: ["/"], sourceType: "company_homepage", priority: 3_000 },
+  { paths: ["/about", "/company"], sourceType: "about_page", priority: 2_900 },
+  { paths: ["/products", "/product", "/platform"], sourceType: "product_page", priority: 2_800 },
+  { paths: ["/solutions"], sourceType: "solutions_page", priority: 2_790 },
+  { paths: ["/trust", "/security"], sourceType: "security_page", priority: 2_700 },
+  { paths: ["/privacy"], sourceType: "privacy_page", priority: 2_690 },
+  { paths: ["/careers", "/jobs"], sourceType: "careers_page", priority: 2_600 },
+  { paths: ["/investors", "/ir"], sourceType: "investor_relations_page", priority: 2_500 },
+  { paths: ["/newsroom", "/news", "/press"], sourceType: "newsroom_page", priority: 2_490 },
 ];
-const SUBMITTED_START_PRIORITY = 1_100;
+const SUBMITTED_START_PRIORITY = 2_950;
 
 function classifyPdfLink(url: URL, anchorText: string | null) {
   const target = `${url.pathname} ${anchorText ?? ""}`.toLowerCase();
@@ -172,23 +171,26 @@ export function buildInitialCrawlCandidates(startUrl: string, canonicalDomain: s
   const start = new URL(startUrl);
   const rootUrl = `${start.protocol}//${start.host}/`;
   const candidates = new Map<string, CrawlCandidate>();
+  const discoveredAt = new Date();
 
-  for (const candidate of ROOT_FALLBACKS) {
-    const seededUrl = new URL(candidate.path, rootUrl).toString();
+  for (const seed of SOURCE_PLAN_FALLBACKS) {
+    for (const [index, path] of seed.paths.entries()) {
+      const seededUrl = new URL(path, rootUrl).toString();
 
-    if (!isCompanyHostname(new URL(seededUrl).hostname, canonicalDomain)) {
-      continue;
+      if (!isCompanyHostname(new URL(seededUrl).hostname, canonicalDomain)) {
+        continue;
+      }
+
+      candidates.set(seededUrl, {
+        url: seededUrl,
+        kind: path.endsWith(".pdf") ? "pdf" : "html",
+        priority: seed.priority - index,
+        sourceType: seed.sourceType,
+        anchorText: null,
+        discoveredFromUrl: null,
+        discoveredAt,
+      });
     }
-
-    candidates.set(seededUrl, {
-      url: seededUrl,
-      kind: candidate.path.endsWith(".pdf") ? "pdf" : "html",
-      priority: candidate.priority,
-      sourceType: candidate.sourceType,
-      anchorText: null,
-      discoveredFromUrl: null,
-      discoveredAt: new Date(),
-    });
   }
 
   const seededStart = classifyDiscoveredCandidate(startUrl, rootUrl, canonicalDomain, null);
@@ -198,6 +200,7 @@ export function buildInitialCrawlCandidates(startUrl: string, canonicalDomain: s
     const prioritizedStart = {
       ...seededStart,
       priority: Math.max(seededStart.priority, SUBMITTED_START_PRIORITY),
+      discoveredAt,
     };
 
     candidates.set(

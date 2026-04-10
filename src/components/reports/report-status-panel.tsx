@@ -41,6 +41,18 @@ function formatRunStatusLabel(status: string) {
   }
 }
 
+function getPrimaryStatusLabel(status: ReportStatusShell) {
+  if (status.report.status === "ready_with_limited_coverage") {
+    return "Ready with limited coverage";
+  }
+
+  if (status.report.status === "ready") {
+    return "Ready";
+  }
+
+  return status.currentRun ? formatRunStatusLabel(status.currentRun.status) : formatRunStatusLabel(status.report.status);
+}
+
 function normalizeVisibleCopy(text: string) {
   return text
     .replaceAll("account-plan", "AI account brief")
@@ -62,6 +74,14 @@ function getRunNarrative(status: ReportStatusShell) {
   const currentStepState = currentRun.stepKey
     ? currentRun.progress.steps.find((step) => step.key === currentRun.stepKey)?.status
     : null;
+
+  if (status.report.status === "ready_with_limited_coverage" && currentRun.status !== "completed") {
+    return "The core brief is already usable. Optional enrichment or export work may still finish in the background, so some coverage details can improve on refresh.";
+  }
+
+  if (status.report.status === "ready" && currentRun.status !== "completed") {
+    return "The core brief is already ready. Optional enrichment or export work may still finish in the background.";
+  }
 
   switch (currentRun.status) {
     case "queued":
@@ -131,7 +151,7 @@ export function ReportStatusPanel({ status, isPolling, errorMessage }: ReportSta
           </div>
           <div className="flex flex-wrap gap-2">
             <Badge className="rounded-full px-3 py-1" variant="secondary">
-              {formatRunStatusLabel(currentRun.status)}
+              {getPrimaryStatusLabel(status)}
             </Badge>
             <Badge className="rounded-full px-3 py-1" variant="outline">
               {status.result.label}

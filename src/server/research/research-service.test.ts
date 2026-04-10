@@ -471,6 +471,7 @@ describe("createResearchPipelineService", () => {
     const enrichMessage = await service.enrichExternalSources(stub.context);
     const factMessage = await service.buildFactBase(stub.context);
     const summaryMessage = await service.generateResearchSummary(stub.context);
+    const factPacket = JSON.parse(String(stub.artifacts[0]?.inlineJson ?? "{}"));
 
     expect(enrichMessage).toContain("stored 1 external sources");
     expect(factMessage).toContain("Persisted 1 source-backed facts");
@@ -479,6 +480,8 @@ describe("createResearchPipelineService", () => {
     expect(stub.sources).toHaveLength(2);
     expect(stub.facts).toHaveLength(1);
     expect(stub.context.run.researchSummary?.companyIdentity.companyName).toBe("OpenAI");
+    expect(factPacket.packetType).toBe("fact_packet");
+    expect(factPacket.evidence).toHaveLength(1);
     expect(stub.events.some((event) => event.eventType === "research.summary.completed")).toBe(true);
     expect(stub.artifacts).toHaveLength(1);
     expect(telemetry.createVectorStoreCalls).toBe(1);
@@ -574,9 +577,12 @@ describe("createResearchPipelineService", () => {
 
     const enrichMessage = await service.enrichExternalSources(stub.context);
 
-    expect(enrichMessage).toContain("after first-party site coverage stayed limited");
+    expect(enrichMessage).toContain("after first-party site coverage stayed limited in search-first mode");
+    expect(enrichMessage).toContain("light brief mode");
     expect(stub.sources).toHaveLength(1);
     expect(stub.events.some((event) => event.eventType === "research.entity_resolution.fallback")).toBe(true);
+    expect(stub.events.some((event) => event.eventType === "research.fallback_plan_selected")).toBe(true);
+    expect(stub.events.some((event) => event.eventType === "research.light_brief_mode_selected")).toBe(true);
     expect(telemetry.parseCalls).toEqual([
       {
         schemaName: "external_source_enrichment",

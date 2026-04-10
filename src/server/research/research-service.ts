@@ -3,7 +3,7 @@ import "server-only";
 import { createHash } from "node:crypto";
 
 import { REPORT_SECTION_DEFINITIONS } from "@/lib/report-sections";
-import type { PersistedFactRecord, ResearchSummary } from "@/lib/types/research";
+import type { FactPacket, PersistedFactRecord, ResearchSummary } from "@/lib/types/research";
 import { normalizeCanonicalDomain, normalizePublicHttpUrl } from "@/lib/url";
 import { OPENAI_EXTRACTION_MODEL, OPENAI_SYNTHESIS_MODEL } from "@/server/openai/models";
 import {
@@ -17,6 +17,12 @@ import {
   factNormalizationSchema,
   researchSummarySchema,
 } from "@/server/research/schemas";
+import {
+  buildFactPacket,
+  deriveCompanyNameFromDomain,
+  FACT_PACKET_ARTIFACT_FILE_NAME,
+  selectResearchBriefMode,
+} from "@/server/research/fact-packet";
 import {
   buildSourceRegistry,
   buildSourceUrlIndex,
@@ -104,34 +110,20 @@ function dedupeFacts(facts: PersistedFactRecord[], validSourceIds: Set<number>) 
   return normalizedFacts;
 }
 
-function buildArtifactBundle(input: {
-  researchSummary: ResearchSummary;
-  facts: PersistedFact[];
-  sources: PersistedSource[];
+function buildFactPacketArtifactBundle(input: {
+  reportId: number;
+  runId: number;
+  factPacket: FactPacket;
 }): UpsertArtifactInput {
-  const body = compactJson({
-    researchSummary: input.researchSummary,
-    facts: input.facts.map((fact) => ({
-      id: fact.id,
-      claim: fact.statement,
-      section: fact.section,
-      classification: fact.classification,
-      confidence: fact.confidence,
-      freshness: fact.freshness,
-      sentiment: fact.sentiment,
-      relevance: fact.relevance,
-      sourceIds: fact.sourceIds,
-    })),
-    sourceRegistry: buildSourceRegistry(input.sources),
-  });
+  const body = compactJson(input.factPacket);
   const contentHash = createHash("sha256").update(body).digest("hex");
 
   return {
-    reportId: input.facts[0]?.reportId ?? input.sources[0]?.reportId ?? 0,
-    runId: input.facts[0]?.runId ?? input.sources[0]?.runId ?? null,
+    reportId: input.reportId,
+    runId: input.runId,
     artifactType: "structured_json",
     mimeType: "application/json",
-    fileName: "research-summary.json",
+    fileName: FACT_PACKET_ARTIFACT_FILE_NAME,
     contentHash,
     sizeBytes: Buffer.byteLength(body),
     storagePointers: {
@@ -184,7 +176,7 @@ async function maybeWriteResearchArtifact(
   }
 
   const blob = await maybeStoreBlobArtifact({
-    pathname: `reports/${context.report.id}/runs/${context.run.id}/research/summary.json`,
+    pathname: `reports/${context.report.id}/runs/${context.run.id}/research/${bundle.fileName ?? "structured.json"}`,
     body: inlineJson,
     contentType: "application/json",
     minimumBytes: 0,
@@ -209,37 +201,27 @@ function buildEntityResolutionPrompt(context: StoredRunContext, sources: Persist
   });
 }
 
-function buildExternalEnrichmentPrompt(context: StoredRunContext, companyName: string, sources: PersistedSource[]) {
+function buildExternalEnrichmentPrompt(input: {
+  context: StoredRunContext;
+  companyName: string;
+  sources: PersistedSource[];
+  sourcePlanCoverage: ReturnType<typeof summarizeSourcePlanCoverage>;
+  searchMode: "supplemental" | "search_first";
+}) {
   return compactJson({
-    companyName,
-    canonicalDomain: context.report.canonicalDomain,
-    crawlSourceRegistry: summarizeSourcesForPrompt(sources),
+    companyName: input.companyName,
+    canonicalDomain: input.context.report.canonicalDomain,
+    crawlSourceRegistry: summarizeSourcesForPrompt(input.sources),
+    searchMode: input.searchMode,
+    sourcePlanCoverage: input.sourcePlanCoverage,
     researchGoals: [
-      "Recent news",
-      "Investor materials and recent quarter or earnings sources when public",
-      "Official company and executive social signals",
-      "Review-platform or complaint themes",
-      "Support, status, and incident sources",
-      "Competitive and market context",
+      "Fill missing source-plan slots with official company URLs first.",
+      "Prefer homepage, about/company, products/solutions/platform, trust/security/privacy, careers, and investor/newsroom sources when they can be verified.",
+      "When official sources are unavailable, add a small set of reputable public sources that directly support visible company claims.",
+      "Keep competitor context, complaint themes, and broader market commentary optional and secondary to core brief evidence.",
     ],
     currentDate: new Date().toISOString(),
   });
-}
-
-function deriveCompanyNameFromDomain(canonicalDomain: string) {
-  const rootLabel = normalizeCanonicalDomain(canonicalDomain).split(".")[0] ?? canonicalDomain;
-
-  return rootLabel
-    .split(/[-_]+/)
-    .filter(Boolean)
-    .map((segment) => {
-      if (!/[aeiou]/i.test(segment) && segment.length <= 4) {
-        return segment.toUpperCase();
-      }
-
-      return segment.charAt(0).toUpperCase() + segment.slice(1);
-    })
-    .join(" ");
 }
 
 function summarizeSourceCoverage(sources: PersistedSource[], canonicalDomain: string) {
@@ -258,22 +240,87 @@ function summarizeSourceCoverage(sources: PersistedSource[], canonicalDomain: st
   };
 }
 
-function buildFactNormalizationPrompt(context: StoredRunContext, sources: PersistedSource[]) {
+function summarizeSourcePlanCoverage(sources: PersistedSource[], canonicalDomain: string) {
+  const firstPartySources = sources.filter((source) => source.canonicalDomain === canonicalDomain);
+  const hasSourceType = (sourceTypes: PersistedSource["sourceType"][]) =>
+    firstPartySources.some((source) => sourceTypes.includes(source.sourceType));
+
+  return [
+    {
+      slot: "homepage",
+      covered: hasSourceType(["company_homepage", "company_site"]),
+      preferredSourceTypes: ["company_homepage", "company_site"],
+    },
+    {
+      slot: "about_company",
+      covered: hasSourceType(["about_page"]),
+      preferredSourceTypes: ["about_page"],
+    },
+    {
+      slot: "products_solutions_platform",
+      covered: hasSourceType(["product_page", "solutions_page", "developer_page", "docs_page"]),
+      preferredSourceTypes: ["product_page", "solutions_page", "developer_page", "docs_page"],
+    },
+    {
+      slot: "trust_security_privacy",
+      covered: hasSourceType(["security_page", "privacy_page", "status_page", "support_page"]),
+      preferredSourceTypes: ["security_page", "privacy_page", "status_page", "support_page"],
+    },
+    {
+      slot: "careers",
+      covered: hasSourceType(["careers_page"]),
+      preferredSourceTypes: ["careers_page"],
+    },
+    {
+      slot: "investor_newsroom",
+      covered: hasSourceType([
+        "investor_relations_page",
+        "investor_report",
+        "earnings_release",
+        "newsroom_page",
+        "blog_page",
+      ]),
+      preferredSourceTypes: [
+        "investor_relations_page",
+        "investor_report",
+        "earnings_release",
+        "newsroom_page",
+        "blog_page",
+      ],
+    },
+  ];
+}
+
+function buildFactNormalizationPrompt(
+  context: StoredRunContext,
+  sources: PersistedSource[],
+  briefMode: FactPacket["briefMode"],
+) {
   return compactJson({
     companyUrl: context.report.normalizedInputUrl,
     canonicalDomain: context.report.canonicalDomain,
+    briefMode,
     sourceRegistry: summarizeSourcesForPrompt(sources),
     instructions: {
       note: "Use only source IDs from the source registry. Uploaded files contain the source ID in the file header.",
-      expectedFacts: "Return 12 to 28 high-signal claims when evidence exists. Prefer authoritative sources and keep uncertainty explicit.",
+      expectedFacts:
+        briefMode === "light"
+          ? "Return 6 to 14 high-signal claims. Favor the strongest supported claims only and keep uncertainty explicit."
+          : "Return 12 to 28 high-signal claims when evidence exists. Prefer authoritative sources and keep uncertainty explicit.",
     },
   });
 }
 
-function buildResearchSummaryPrompt(context: StoredRunContext, sources: PersistedSource[], facts: PersistedFact[]) {
+function buildResearchSummaryPrompt(
+  context: StoredRunContext,
+  sources: PersistedSource[],
+  facts: PersistedFact[],
+  briefMode: FactPacket["briefMode"],
+) {
   return compactJson({
     companyUrl: context.report.normalizedInputUrl,
     canonicalDomain: context.report.canonicalDomain,
+    briefMode,
     sourceRegistry: summarizeSourcesForPrompt(sources),
     facts: facts.map((fact) => ({
       claim: fact.statement,
@@ -287,6 +334,10 @@ function buildResearchSummaryPrompt(context: StoredRunContext, sources: Persiste
       sourceIds: fact.sourceIds,
     })),
     requiredSections: REPORT_SECTION_DEFINITIONS.map((section) => section.key),
+    synthesisInstructions:
+      briefMode === "light"
+        ? "Prioritize the strongest supported company identity, opportunity, motion, stakeholder, and discovery/pilot signals. Keep evidence gaps and confidence limits explicit."
+        : "Cover the full brief while keeping evidence gaps and confidence limits explicit.",
   });
 }
 
@@ -397,6 +448,7 @@ export function createResearchPipelineService(dependencies: ResearchServiceDepen
 
       const sources = await repository.listSourcesByRunId(context.run.id);
       const sourceCoverage = summarizeSourceCoverage(sources, context.report.canonicalDomain);
+      const sourcePlanCoverage = summarizeSourcePlanCoverage(sources, context.report.canonicalDomain);
 
       await repository.appendRunEvent({
         reportId: context.report.id,
@@ -410,6 +462,24 @@ export function createResearchPipelineService(dependencies: ResearchServiceDepen
             : "First-party source coverage is limited, so Account Atlas will lean more heavily on verified public-web enrichment.",
         metadata: sourceCoverage,
       });
+
+      const searchMode = sourceCoverage.firstPartyCoverage === "thin" ? "search_first" : "supplemental";
+
+      if (searchMode === "search_first") {
+        await repository.appendRunEvent({
+          reportId: context.report.id,
+          runId: context.run.id,
+          level: "warning",
+          eventType: "research.fallback_plan_selected",
+          stepKey: "enrich_external_sources",
+          message:
+            "First-party sources remained thin, so Account Atlas switched to search-first mode and targeted official/public web sources.",
+          metadata: {
+            sourceCoverage,
+            sourcePlanCoverage,
+          },
+        });
+      }
 
       await vectorStoreManager.ensureRunVectorStore(context, sources, {
         syncSources: false,
@@ -468,8 +538,14 @@ export function createResearchPipelineService(dependencies: ResearchServiceDepen
       const enrichment = await openAIClient.parseStructuredOutput({
         model: OPENAI_EXTRACTION_MODEL,
         instructions:
-          "Find current public research signals beyond the company site. Use authoritative sources first, never fabricate a source, and return only URLs supported by the web search tool in this response.",
-        input: buildExternalEnrichmentPrompt(context, resolvedCompanyName, sources),
+          "Find current public research signals beyond the currently persisted company sources. Fill missing official company source-plan slots first, use authoritative public sources second, never fabricate a source, and return only URLs supported by the web search tool in this response.",
+        input: buildExternalEnrichmentPrompt({
+          context,
+          companyName: resolvedCompanyName,
+          sources,
+          sourcePlanCoverage,
+          searchMode,
+        }),
         schema: externalSourceEnrichmentSchema,
         schemaName: "external_source_enrichment",
         tools: [WEB_SEARCH_TOOL],
@@ -529,6 +605,8 @@ export function createResearchPipelineService(dependencies: ResearchServiceDepen
       }
 
       const totalSourcesAfterEnrichment = sources.length + persistedExternalSources;
+      const refreshedSources = await repository.listSourcesByRunId(context.run.id);
+      const briefMode = selectResearchBriefMode(refreshedSources, context.report.canonicalDomain);
 
       await repository.appendRunEvent({
         reportId: context.report.id,
@@ -547,9 +625,30 @@ export function createResearchPipelineService(dependencies: ResearchServiceDepen
         },
       });
 
+      if (briefMode === "light") {
+        await repository.appendRunEvent({
+          reportId: context.report.id,
+          runId: context.run.id,
+          level: "warning",
+          eventType: "research.light_brief_mode_selected",
+          stepKey: "enrich_external_sources",
+          message:
+            "Evidence coverage remains sparse, so later synthesis will stay in light brief mode with explicit confidence labels.",
+          metadata: {
+            sourceCoverage: summarizeSourceCoverage(refreshedSources, context.report.canonicalDomain),
+            sourcePlanCoverage: summarizeSourcePlanCoverage(refreshedSources, context.report.canonicalDomain),
+          },
+        });
+      }
+
+      const summarySuffix =
+        briefMode === "light"
+          ? " The report will continue in light brief mode with explicit confidence labels."
+          : "";
+
       return sourceCoverage.firstPartyCoverage === "thin"
-        ? `Stored ${persistedExternalSources} external sources (${dedupedExternalSources} deduped) after first-party site coverage stayed limited.`
-        : `Resolved ${enrichment.parsed.entityResolution.companyName} and stored ${persistedExternalSources} external sources (${dedupedExternalSources} deduped).`;
+        ? `Stored ${persistedExternalSources} external sources (${dedupedExternalSources} deduped) after first-party site coverage stayed limited in search-first mode.${summarySuffix}`
+        : `Resolved ${enrichment.parsed.entityResolution.companyName} and stored ${persistedExternalSources} external sources (${dedupedExternalSources} deduped).${summarySuffix}`;
     },
 
     async buildFactBase(context: StoredRunContext) {
@@ -594,11 +693,12 @@ export function createResearchPipelineService(dependencies: ResearchServiceDepen
 
       const sourceRegistry = buildSourceRegistry(sources);
       const validSourceIds = new Set(sourceRegistry.map((source) => source.sourceId));
+      const briefMode = selectResearchBriefMode(sources, context.report.canonicalDomain);
       const factResponse = await openAIClient.parseStructuredOutput({
         model: OPENAI_EXTRACTION_MODEL,
         instructions:
           "Normalize a source-backed fact base. Use only source IDs from the registry. Prefer authoritative sources. Mark uncertain conclusions as inferences or hypotheses. Do not invent citations.",
-        input: buildFactNormalizationPrompt(context, sources),
+        input: buildFactNormalizationPrompt(context, sources, briefMode),
         schema: factNormalizationSchema,
         schemaName: "fact_normalization",
         maxOutputTokens: 4_500,
@@ -617,14 +717,62 @@ export function createResearchPipelineService(dependencies: ResearchServiceDepen
         facts: normalizedFacts,
       });
 
+      const persistedFacts = await repository.listFactsByRunId(context.run.id);
+      const factPacket = buildFactPacket({
+        context,
+        sources,
+        facts: persistedFacts,
+        briefMode,
+      });
+
+      await repository.updateRunResearchSummary({
+        reportId: context.report.id,
+        runId: context.run.id,
+        researchSummary: factPacket.summary,
+        companyName: factPacket.summary.companyIdentity.companyName,
+      });
+
+      let factPacketArtifactFallbackApplied = false;
+
+      try {
+        await maybeWriteResearchArtifact(
+          context,
+          repository,
+          buildFactPacketArtifactBundle({
+            reportId: context.report.id,
+            runId: context.run.id,
+            factPacket,
+          }),
+        );
+      } catch (error) {
+        factPacketArtifactFallbackApplied = true;
+
+        await repository.appendRunEvent({
+          reportId: context.report.id,
+          runId: context.run.id,
+          level: "warning",
+          eventType: "fallback_applied",
+          stepKey: "build_fact_base",
+          message:
+            "The structured fact packet could not be stored as an artifact, so Account Atlas will continue from the persisted fact base and summary only.",
+          metadata: {
+            fallbackType: "fact_packet_artifact",
+            errorMessage: error instanceof Error ? error.message : "Unknown fact packet persistence failure.",
+          },
+        });
+      }
+
       await repository.appendRunEvent({
         reportId: context.report.id,
         runId: context.run.id,
         level: "info",
         eventType: "research.fact_base.completed",
         stepKey: "build_fact_base",
-        message: `Persisted ${normalizedFacts.length} source-backed facts.`,
+        message: `Persisted ${normalizedFacts.length} source-backed facts and a compact fact packet.`,
         metadata: {
+          briefMode: factPacket.briefMode,
+          factPacketArtifactFallbackApplied,
+          parsedFactPacket: factPacket,
           responseId: factResponse.responseId,
           parsed: factResponse.parsed,
           outputText: factResponse.outputText,
@@ -632,7 +780,7 @@ export function createResearchPipelineService(dependencies: ResearchServiceDepen
         },
       });
 
-      return `Persisted ${normalizedFacts.length} source-backed facts.`;
+      return `Persisted ${normalizedFacts.length} source-backed facts and built a structured fact packet for report generation.`;
     },
 
     async generateResearchSummary(context: StoredRunContext) {
@@ -666,12 +814,13 @@ export function createResearchPipelineService(dependencies: ResearchServiceDepen
       }
 
       const sourceUrlIndex = buildSourceUrlIndex(sources);
+      const briefMode = selectResearchBriefMode(sources, context.report.canonicalDomain);
 
       const summaryResponse = await openAIClient.parseStructuredOutput({
         model: OPENAI_SYNTHESIS_MODEL,
         instructions:
           "Synthesize an evidence-backed research summary for an enterprise account plan. Use only source IDs present in the registry. Surface uncertainty clearly when evidence is thin and never invent a citation.",
-        input: buildResearchSummaryPrompt(context, sources, facts),
+        input: buildResearchSummaryPrompt(context, sources, facts, briefMode),
         schema: researchSummarySchema,
         schemaName: "research_summary",
         maxOutputTokens: 4_500,
@@ -714,16 +863,6 @@ export function createResearchPipelineService(dependencies: ResearchServiceDepen
           fileSearchResults: summaryResponse.fileSearchResults,
         },
       });
-
-      await maybeWriteResearchArtifact(
-        context,
-        repository,
-        buildArtifactBundle({
-          researchSummary: normalizedSummary,
-          facts,
-          sources,
-        }),
-      );
 
       return `Synthesized research summary with completeness ${normalizedSummary.researchCompletenessScore}/100.`;
     },

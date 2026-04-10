@@ -4,7 +4,7 @@ import type { SourceType } from "@/lib/source";
 export type ReportLifecycleStatus = "queued" | "running" | "ready" | "ready_with_limited_coverage" | "failed";
 export type MotionRecommendation = "workspace" | "api_platform" | "hybrid" | "undetermined";
 export type ReportArtifactType = "markdown" | "pdf" | "structured_json" | "source_bundle";
-export type ReportReuseReason = "recent_completed" | "in_progress" | "recent_failed" | null;
+export type ReportReuseReason = "recent_completed" | "cached_completed" | "in_progress" | "recent_failed" | null;
 export type ReportContentState = "pending" | "partial" | "ready" | "failed";
 
 export type ReportRunLifecycleStatus =

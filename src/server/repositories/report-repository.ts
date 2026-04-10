@@ -19,6 +19,7 @@ import {
   useCases,
 } from "@/server/db/schema";
 import {
+  canContinueAfterCoreBriefSuccess,
   createInitialPipelineState,
   normalizePipelineState,
   type StoredPipelineState,
@@ -389,6 +390,7 @@ export type ReportRepository = {
   createQueuedReport(input: CreateQueuedReportParams): Promise<CreatedQueuedReportRecord>;
   findReportShellByShareId(shareId: string): Promise<StoredReportShell | null>;
   findLatestReportShellByCanonicalDomain(canonicalDomain: string): Promise<StoredReportShell | null>;
+  findLatestReadyReportShellByCanonicalDomain?(canonicalDomain: string): Promise<StoredReportShell | null>;
   findRunContextById(runId: number): Promise<StoredRunContext | null>;
   listSourcesByRunId(runId: number): Promise<PersistedSource[]>;
   listFactsByRunId(runId: number): Promise<PersistedFact[]>;
@@ -485,6 +487,10 @@ async function findRecentEventsByRunId(runId: number, limit = 8) {
 
 function isReportFinalized(status: PersistedReport["status"]) {
   return status === "ready" || status === "ready_with_limited_coverage" || status === "failed";
+}
+
+function isReportSuccessful(status: PersistedReport["status"]) {
+  return status === "ready" || status === "ready_with_limited_coverage";
 }
 
 function isRunFinalized(status: PersistedRun["status"]) {
@@ -593,6 +599,34 @@ export const drizzleReportRepository: ReportRepository = {
       .from(reports)
       .where(eq(reports.canonicalDomain, canonicalDomain))
       .orderBy(desc(reports.updatedAt), desc(reports.id))
+      .limit(1);
+
+    if (!report) {
+      return null;
+    }
+
+    const currentRun = await findLatestRunByReportId(report.id);
+    const recentEvents = currentRun ? await findRecentEventsByRunId(currentRun.id) : [];
+
+    return {
+      report,
+      currentRun,
+      recentEvents,
+    };
+  },
+
+  async findLatestReadyReportShellByCanonicalDomain(canonicalDomain) {
+    const db = getDb();
+    const [report] = await db
+      .select(reportColumns)
+      .from(reports)
+      .where(
+        and(
+          eq(reports.canonicalDomain, canonicalDomain),
+          inArray(reports.status, ["ready", "ready_with_limited_coverage"]),
+        ),
+      )
+      .orderBy(desc(reports.completedAt), desc(reports.updatedAt), desc(reports.id))
       .limit(1);
 
     if (!report) {
@@ -760,14 +794,6 @@ export const drizzleReportRepository: ReportRepository = {
         return null;
       }
 
-      if (isReportFinalized(row.report.status)) {
-        return {
-          outcome: "finalized",
-          context: row,
-          reason: "report_finalized",
-        } satisfies ClaimRunStepExecutionResult;
-      }
-
       if (isRunFinalized(row.run.status)) {
         return {
           outcome: "finalized",
@@ -787,6 +813,19 @@ export const drizzleReportRepository: ReportRepository = {
         return {
           outcome: "already_completed",
           context: row,
+        } satisfies ClaimRunStepExecutionResult;
+      }
+
+      const allowPostSuccessContinuation =
+        isReportSuccessful(row.report.status) &&
+        !isRunFinalized(row.run.status) &&
+        canContinueAfterCoreBriefSuccess(input.stepKey);
+
+      if (isReportFinalized(row.report.status) && !allowPostSuccessContinuation) {
+        return {
+          outcome: "finalized",
+          context: row,
+          reason: "report_finalized",
         } satisfies ClaimRunStepExecutionResult;
       }
 
@@ -849,7 +888,7 @@ export const drizzleReportRepository: ReportRepository = {
         .update(reports)
         .set({
           status: input.reportStatus ?? "running",
-          completedAt: null,
+          completedAt: isReportSuccessful(input.reportStatus ?? "running") ? row.report.completedAt ?? now : null,
           failedAt: null,
           updatedAt: now,
         })
@@ -959,12 +998,14 @@ export const drizzleReportRepository: ReportRepository = {
 
       await tx
         .update(reports)
-        .set({
-          status: input.reportStatus,
-          completedAt: input.reportCompletedAt ?? null,
-          failedAt: input.reportFailedAt ?? null,
-          updatedAt: now,
-        })
+        .set(
+          {
+            status: input.reportStatus,
+            updatedAt: now,
+            ...(input.reportCompletedAt !== undefined ? { completedAt: input.reportCompletedAt } : {}),
+            ...(input.reportFailedAt !== undefined ? { failedAt: input.reportFailedAt } : {}),
+          },
+        )
         .where(eq(reports.id, input.reportId));
     });
   },

@@ -276,10 +276,6 @@ describe("createCompanySiteCrawler", () => {
         blobThresholdBytes: 10_000,
       },
       fetchResource: async ({ url }) => {
-        if (url === "https://www.jll.com/" || url === "https://www.jll.com/about") {
-          throw new PipelineStepError("CRAWL_TOO_MANY_REDIRECTS", `Too many redirects while fetching ${url}.`);
-        }
-
         if (url === "https://www.jll.com/en-us") {
           return {
             finalUrl: "https://www.jll.com/en-us/",
@@ -290,6 +286,10 @@ describe("createCompanySiteCrawler", () => {
             declaredContentLength: 46,
             retrievedAt: new Date("2026-04-07T12:00:00.000Z"),
           };
+        }
+
+        if (url.startsWith("https://www.jll.com/")) {
+          throw new PipelineStepError("CRAWL_TOO_MANY_REDIRECTS", `Too many redirects while fetching ${url}.`);
         }
 
         throw new Error(`Unexpected URL: ${url}`);
@@ -350,8 +350,117 @@ describe("createCompanySiteCrawler", () => {
     expect(result.pagesFetched).toBe(1);
     expect(result.htmlPagesStored).toBe(1);
     expect(result.coverageStatus).toBe("limited");
-    expect(result.manifest.visitedUrls[0]).toBe("https://www.jll.com/en-us");
+    expect(result.manifest.visitedUrls.slice(0, 2)).toEqual(["https://www.jll.com/", "https://www.jll.com/en-us"]);
     expect(stub.events.some((event) => event.message.includes("Stored"))).toBe(true);
+  });
+
+  it("exhausts the deterministic source plan before optional deep-link crawl candidates", async () => {
+    const stub = createRepositoryStub();
+    const crawler = createCompanySiteCrawler({
+      repository: stub.repository,
+      config: {
+        maxHtmlPages: 3,
+        maxPdfLinks: 0,
+        maxConcurrency: 1,
+        requestTimeoutMs: 1000,
+        maxResponseBytes: 500_000,
+        maxPdfBytes: 500_000,
+        maxRedirects: 2,
+        maxStoredTextChars: 10_000,
+        maxStoredMarkdownChars: 10_000,
+        blobThresholdBytes: 10_000,
+      },
+      fetchResource: async ({ url }) => {
+        if (url === "https://acme.com/") {
+          return {
+            finalUrl: url,
+            status: 200,
+            mimeType: "text/html",
+            buffer: Buffer.from("<html><body><a href=\"/deep/customer-story\">Deep story</a></body></html>"),
+            truncated: false,
+            declaredContentLength: 68,
+            retrievedAt: new Date("2026-04-07T12:00:00.000Z"),
+          };
+        }
+
+        if (url === "https://acme.com/about" || url === "https://acme.com/products") {
+          return {
+            finalUrl: url,
+            status: 200,
+            mimeType: "text/html",
+            buffer: Buffer.from(`<html><body>${url}</body></html>`),
+            truncated: false,
+            declaredContentLength: 32,
+            retrievedAt: new Date("2026-04-07T12:00:00.000Z"),
+          };
+        }
+
+        throw new Error(`Unexpected URL: ${url}`);
+      },
+      parseDocument: ({ finalUrl }) => ({
+        title: finalUrl,
+        canonicalUrl: finalUrl,
+        markdownContent: `# ${finalUrl}`,
+        textContent: finalUrl,
+        parsingStrategy: "full",
+        publishedAt: null,
+        updatedAtHint: null,
+        links:
+          finalUrl === "https://acme.com/"
+            ? [{ url: "/deep/customer-story", anchorText: "Deep story" }]
+            : [],
+      }),
+      storeBlobArtifact: async () => null,
+    });
+
+    const context: StoredRunContext = {
+      report: {
+        id: 15,
+        shareId: "acmeplan01",
+        status: "running",
+        normalizedInputUrl: "https://acme.com/",
+        canonicalDomain: "acme.com",
+        companyName: null,
+        createdAt: new Date("2026-04-07T12:00:00.000Z"),
+        updatedAt: new Date("2026-04-07T12:00:00.000Z"),
+        completedAt: null,
+        failedAt: null,
+      },
+      run: {
+        id: 15,
+        reportId: 15,
+        attemptNumber: 1,
+        status: "fetching",
+        executionMode: "inline",
+        progressPercent: 25,
+        stepKey: "crawl_company_site",
+        statusMessage: "Crawling company site.",
+        pipelineState: createInitialPipelineState(),
+        queueMessageId: null,
+        vectorStoreId: null,
+        researchSummary: null,
+        accountPlan: null,
+        errorCode: null,
+        errorMessage: null,
+        createdAt: new Date("2026-04-07T12:00:00.000Z"),
+        updatedAt: new Date("2026-04-07T12:00:00.000Z"),
+        startedAt: new Date("2026-04-07T12:00:00.000Z"),
+        lastHeartbeatAt: null,
+        completedAt: null,
+        failedAt: null,
+      },
+    };
+
+    const result = await crawler.crawlCompanySite(context);
+
+    expect(result.htmlPagesStored).toBe(3);
+    expect(result.manifest.visitedUrls).toEqual([
+      "https://acme.com/",
+      "https://acme.com/about",
+      "https://acme.com/products",
+    ]);
+    expect(result.manifest.visitedUrls).not.toContain("https://acme.com/deep/customer-story");
+    expect(result.manifest.plannedUrls[0]).toBe("https://acme.com/");
   });
 
   it("falls back to public-web enrichment when first-party crawl coverage is exhausted", async () => {
@@ -378,10 +487,10 @@ describe("createCompanySiteCrawler", () => {
           );
         }
 
-        if (url === "https://www.ford.com/about") {
+        if (url.startsWith("https://www.ford.com/")) {
           throw new PipelineStepError(
             "CRAWL_TOO_MANY_REDIRECTS",
-            "Too many redirects while fetching https://www.ford.com/about.",
+            `Too many redirects while fetching ${url}.`,
           );
         }
 
@@ -442,14 +551,14 @@ describe("createCompanySiteCrawler", () => {
 
     expect(result.pagesFetched).toBe(0);
     expect(result.coverageStatus).toBe("minimal");
-    expect(result.fallbackPlanApplied).toBe("public_web_enrichment");
+    expect(result.fallbackPlanApplied).toBe("search_first");
     expect(result.limitations).toContain("first_party_crawl_unavailable");
     expect(stub.events.some((event) => event.eventType === "crawl.source.skipped" && event.message.includes("ford.com/"))).toBe(true);
     expect(
       stub.events.some(
         (event) =>
           event.eventType === "crawl.fallback_plan_selected" &&
-          event.message.includes("public-web research only"),
+          event.message.includes("search-first public-web research mode"),
       ),
     ).toBe(true);
   });

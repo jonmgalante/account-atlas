@@ -79,6 +79,8 @@ function buildSafeSkipMessage(candidateUrl: string, errorCode: string) {
       return `Skipped ${candidateUrl} because the page could not be fetched reliably.`;
     case "CRAWL_UNSUPPORTED_CONTENT_TYPE":
       return `Skipped ${candidateUrl} because the response type could not be processed safely.`;
+    case "PIPELINE_STEP_FAILED":
+      return `Skipped ${candidateUrl} because the page was malformed or could not be parsed safely.`;
     default:
       return `Skipped ${candidateUrl} because it could not be processed safely.`;
   }
@@ -209,18 +211,34 @@ export function createCompanySiteCrawler(dependencies: CompanySiteCrawlerDepende
 
   async function crawlCompanySite(context: StoredRunContext): Promise<CrawlIngestionResult> {
     const normalizedTargetUrl = normalizeCompanyUrl(context.report.normalizedInputUrl);
+    const sourcePlanCandidates = buildInitialCrawlCandidates(normalizedTargetUrl, context.report.canonicalDomain);
     const pendingCandidates = new Map<string, CrawlCandidate>();
     const visitedHtmlUrls = new Set<string>();
     const visitedPdfUrls = new Set<string>();
     const blockedUrls = new Set<string>();
+    const coveredSourceTypes = new Set<CrawlCandidate["sourceType"]>();
     const pdfUrls = new Set<string>();
     const sourceIds = new Set<number>();
     const limitations = new Set<string>();
     const limiter = pLimit(config.maxConcurrency);
 
-    for (const candidate of buildInitialCrawlCandidates(normalizedTargetUrl, context.report.canonicalDomain)) {
+    for (const candidate of sourcePlanCandidates) {
       pendingCandidates.set(candidate.url, candidate);
     }
+
+    await repository.appendRunEvent({
+      reportId: context.report.id,
+      runId: context.run.id,
+      level: "info",
+      eventType: "crawl.source_plan.selected",
+      stepKey: "crawl_company_site",
+      message: "Account Atlas started with a deterministic company source plan before any optional deep crawl work.",
+      metadata: {
+        canonicalDomain: context.report.canonicalDomain,
+        plannedUrls: sourcePlanCandidates.map((candidate) => candidate.url),
+        submittedUrl: normalizedTargetUrl,
+      },
+    });
 
     let pagesFetched = 0;
     let htmlPagesStored = 0;
@@ -237,7 +255,7 @@ export function createCompanySiteCrawler(dependencies: CompanySiteCrawlerDepende
     );
 
     const processHtmlCandidate = async (candidate: CrawlCandidate): Promise<ProcessedCandidateResult | null> => {
-      if (visitedHtmlUrls.has(candidate.url)) {
+      if (visitedHtmlUrls.has(candidate.url) || coveredSourceTypes.has(candidate.sourceType)) {
         return null;
       }
 
@@ -383,6 +401,10 @@ export function createCompanySiteCrawler(dependencies: CompanySiteCrawlerDepende
             limitations.add("fragile_first_party_pages_skipped");
           }
 
+          if (errorDetails.code === "PIPELINE_STEP_FAILED") {
+            limitations.add("malformed_first_party_pages_skipped");
+          }
+
           await repository.appendRunEvent({
             reportId: context.report.id,
             runId: context.run.id,
@@ -408,6 +430,7 @@ export function createCompanySiteCrawler(dependencies: CompanySiteCrawlerDepende
 
         pagesFetched += 1;
         sourceIds.add(settled.value.outcome.source.id);
+        coveredSourceTypes.add(settled.value.outcome.source.sourceType);
 
         if (settled.value.outcome.dedupeStrategy === "created") {
           if (settled.value.sourceKind === "pdf") {
@@ -496,11 +519,12 @@ export function createCompanySiteCrawler(dependencies: CompanySiteCrawlerDepende
           level: "warning",
           eventType: "crawl.fallback_plan_selected",
           stepKey: "crawl_company_site",
-          message: "First-party crawl coverage was limited, so Account Atlas continued with a lighter set of key company pages.",
+          message: "The deterministic company source plan stayed thin, so Account Atlas continued with a shallow first-party fetch only.",
           metadata: {
             htmlAttempts,
             htmlPagesStored,
             pendingCandidateCount: pendingCandidates.size,
+            plannedUrlCount: sourcePlanCandidates.length,
             skippedOversizedSources,
           },
         });
@@ -569,7 +593,7 @@ export function createCompanySiteCrawler(dependencies: CompanySiteCrawlerDepende
       }
 
     if (!htmlPagesStored && !pdfSourcesStored) {
-      fallbackPlanApplied = "public_web_enrichment";
+      fallbackPlanApplied = "search_first";
       limitations.add("first_party_crawl_unavailable");
 
       await repository.appendRunEvent({
@@ -578,10 +602,11 @@ export function createCompanySiteCrawler(dependencies: CompanySiteCrawlerDepende
         level: "warning",
         eventType: "crawl.fallback_plan_selected",
         stepKey: "crawl_company_site",
-        message: "First-party crawl coverage remained too thin, so Account Atlas continued with public-web research only.",
+        message: "The deterministic company source plan remained too thin, so Account Atlas continued in search-first public-web research mode.",
         metadata: {
           blockedUrls: [...blockedUrls],
           htmlAttempts,
+          plannedUrlCount: sourcePlanCandidates.length,
           skippedOversizedSources,
           visitedUrlCount: visitedHtmlUrls.size,
         },
@@ -602,7 +627,7 @@ export function createCompanySiteCrawler(dependencies: CompanySiteCrawlerDepende
         ? `First-party source coverage is usable: stored ${htmlPagesStored} HTML pages and ${pdfSourcesStored} PDFs.`
         : coverageStatus === "limited"
           ? `First-party source coverage is limited, but Account Atlas can continue with ${htmlPagesStored + pdfSourcesStored} first-party sources and public-web enrichment.`
-          : "First-party source coverage remained thin, so the report will rely on public-web enrichment if enough evidence can be found.";
+          : "First-party source coverage remained thin, so the report will rely on search-first public-web enrichment if enough evidence can be found.";
 
     await repository.appendRunEvent({
       reportId: context.report.id,
@@ -627,62 +652,64 @@ export function createCompanySiteCrawler(dependencies: CompanySiteCrawlerDepende
     });
 
     const manifest = {
-        visitedUrls: [...visitedHtmlUrls],
-        pdfUrls: [...pdfUrls],
-        blockedUrls: [...blockedUrls],
-      };
-      const manifestBody = JSON.stringify(
-        {
-          reportId: context.report.id,
-          runId: context.run.id,
-          pagesFetched,
-          htmlPagesStored,
-          pdfSourcesStored,
-          dedupedSources,
-          coverageStatus,
-          fallbackPlanApplied,
-          limitations: [...limitations],
-          htmlAttempts,
-          truncatedHtmlPages,
-          parserFallbackPages,
-          skippedOversizedSources,
-          ...manifest,
-        },
-        null,
-        2,
-      );
-      const manifestHash = createHash("sha256").update(manifestBody).digest("hex");
-      const manifestBlob = await storeBlobArtifact({
-        pathname: `reports/${context.report.id}/runs/${context.run.id}/crawl/manifest.json`,
-        body: manifestBody,
-        contentType: "application/json",
-        minimumBytes: 0,
-      });
-
-      await repository.upsertArtifact({
+      plannedUrls: sourcePlanCandidates.map((candidate) => candidate.url),
+      visitedUrls: [...visitedHtmlUrls],
+      pdfUrls: [...pdfUrls],
+      blockedUrls: [...blockedUrls],
+    };
+    const manifestBody = JSON.stringify(
+      {
         reportId: context.report.id,
         runId: context.run.id,
-        artifactType: "source_bundle",
-        mimeType: "application/json",
-        fileName: `report-${context.report.shareId}-crawl-manifest.json`,
-        contentHash: manifestHash,
-        sizeBytes: Buffer.byteLength(manifestBody),
-        storagePointers: {
-          manifestBlob,
-          pagesFetched,
-          htmlPagesStored,
-          pdfSourcesStored,
-          dedupedSources,
-          coverageStatus,
-          fallbackPlanApplied,
-          limitations: [...limitations],
-          htmlAttempts,
-          parserFallbackPages,
-          skippedOversizedSources,
-          truncatedHtmlPages,
-          blockedUrlCount: blockedUrls.size,
-        },
-      });
+        pagesFetched,
+        htmlPagesStored,
+        pdfSourcesStored,
+        dedupedSources,
+        coverageStatus,
+        fallbackPlanApplied,
+        limitations: [...limitations],
+        htmlAttempts,
+        truncatedHtmlPages,
+        parserFallbackPages,
+        skippedOversizedSources,
+        ...manifest,
+      },
+      null,
+      2,
+    );
+    const manifestHash = createHash("sha256").update(manifestBody).digest("hex");
+    const manifestBlob = await storeBlobArtifact({
+      pathname: `reports/${context.report.id}/runs/${context.run.id}/crawl/manifest.json`,
+      body: manifestBody,
+      contentType: "application/json",
+      minimumBytes: 0,
+    });
+
+    await repository.upsertArtifact({
+      reportId: context.report.id,
+      runId: context.run.id,
+      artifactType: "source_bundle",
+      mimeType: "application/json",
+      fileName: `report-${context.report.shareId}-crawl-manifest.json`,
+      contentHash: manifestHash,
+      sizeBytes: Buffer.byteLength(manifestBody),
+      storagePointers: {
+        manifestBlob,
+        pagesFetched,
+        htmlPagesStored,
+        pdfSourcesStored,
+        dedupedSources,
+        coverageStatus,
+        fallbackPlanApplied,
+        limitations: [...limitations],
+        htmlAttempts,
+        parserFallbackPages,
+        skippedOversizedSources,
+        truncatedHtmlPages,
+        blockedUrlCount: blockedUrls.size,
+        plannedUrlCount: sourcePlanCandidates.length,
+      },
+    });
 
     return {
       pagesFetched,

@@ -43,33 +43,33 @@ export const REPORT_PIPELINE_STEPS: ReadonlyArray<{
     runStatus: "fetching",
   },
   {
-    key: "enrich_external_sources",
-    label: "Enrich external sources",
-    progressPercent: 32,
-    runStatus: "fetching",
-  },
-  {
     key: "build_fact_base",
     label: "Build fact base",
-    progressPercent: 48,
+    progressPercent: 34,
     runStatus: "extracting",
   },
   {
     key: "generate_account_plan",
     label: "Generate account plan",
-    progressPercent: 66,
+    progressPercent: 58,
     runStatus: "synthesizing",
+  },
+  {
+    key: "enrich_external_sources",
+    label: "Enrich external sources",
+    progressPercent: 72,
+    runStatus: "fetching",
   },
   {
     key: "export_markdown",
     label: "Export markdown",
-    progressPercent: 80,
+    progressPercent: 84,
     runStatus: "synthesizing",
   },
   {
     key: "export_pdf",
     label: "Export PDF",
-    progressPercent: 92,
+    progressPercent: 94,
     runStatus: "synthesizing",
   },
   {
@@ -80,7 +80,17 @@ export const REPORT_PIPELINE_STEPS: ReadonlyArray<{
   },
 ];
 
+const postCoreSuccessStepKeySet = new Set<PipelineStepKey>([
+  "enrich_external_sources",
+  "export_markdown",
+  "export_pdf",
+  "finalize_report",
+]);
 const pipelineStepKeySet = new Set<PipelineStepKey>(REPORT_PIPELINE_STEPS.map((step) => step.key));
+
+export function canContinueAfterCoreBriefSuccess(stepKey: PipelineStepKey) {
+  return postCoreSuccessStepKeySet.has(stepKey);
+}
 
 export function coercePipelineStepKey(value: string | null | undefined): PipelineStepKey | null {
   if (!value) {

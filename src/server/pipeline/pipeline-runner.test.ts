@@ -3,7 +3,11 @@ import { describe, expect, it } from "vitest";
 import type { FinalAccountPlan } from "@/lib/types/account-plan";
 import type { CrawlIngestionResult } from "@/server/crawl/types";
 import { PipelineStepError } from "@/server/pipeline/pipeline-errors";
-import { createInitialPipelineState, normalizePipelineState } from "@/server/pipeline/pipeline-steps";
+import {
+  canContinueAfterCoreBriefSuccess,
+  createInitialPipelineState,
+  normalizePipelineState,
+} from "@/server/pipeline/pipeline-steps";
 import { createReportPipelineRunner } from "@/server/pipeline/pipeline-runner";
 import { retryReportRunQueueMessage } from "@/server/pipeline/report-run-queue-consumer";
 import type { ReportRepository, StoredReportShell, StoredRunContext } from "@/server/repositories/report-repository";
@@ -333,17 +337,6 @@ function createRepositoryStub() {
     },
 
     async claimRunStepExecution(input) {
-      if (report.status === "ready" || report.status === "ready_with_limited_coverage" || report.status === "failed") {
-        return {
-          outcome: "finalized" as const,
-          context: {
-            report,
-            run,
-          },
-          reason: report.status === "failed" ? ("report_finalized" as const) : ("report_finalized" as const),
-        };
-      }
-
       if (run.status === "completed" || run.status === "failed" || run.status === "cancelled") {
         return {
           outcome: "finalized" as const,
@@ -369,6 +362,25 @@ function createRepositoryStub() {
             report,
             run,
           },
+        };
+      }
+
+      const allowPostSuccessContinuation =
+        (report.status === "ready" || report.status === "ready_with_limited_coverage") &&
+        !["completed", "failed", "cancelled"].includes(run.status) &&
+        canContinueAfterCoreBriefSuccess(input.stepKey);
+
+      if (
+        (report.status === "ready" || report.status === "ready_with_limited_coverage" || report.status === "failed") &&
+        !allowPostSuccessContinuation
+      ) {
+        return {
+          outcome: "finalized" as const,
+          context: {
+            report,
+            run,
+          },
+          reason: report.status === "failed" ? ("report_finalized" as const) : ("report_finalized" as const),
         };
       }
 
@@ -417,6 +429,11 @@ function createRepositoryStub() {
       run.lastHeartbeatAt = new Date();
       run.updatedAt = new Date("2026-04-07T12:04:30.000Z");
       report.status = input.reportStatus ?? report.status;
+      report.completedAt =
+        report.status === "ready" || report.status === "ready_with_limited_coverage"
+          ? (report.completedAt ?? new Date("2026-04-07T12:04:30.000Z"))
+          : null;
+      report.failedAt = null;
       report.updatedAt = new Date("2026-04-07T12:04:30.000Z");
 
       const resumedFromStatus =
@@ -460,8 +477,8 @@ function createRepositoryStub() {
       run.failedAt = input.failedAt ?? null;
       run.updatedAt = new Date("2026-04-07T12:05:00.000Z");
       report.status = input.reportStatus ?? report.status;
-      report.completedAt = input.reportCompletedAt ?? null;
-      report.failedAt = input.reportFailedAt ?? null;
+      report.completedAt = input.reportCompletedAt !== undefined ? input.reportCompletedAt : report.completedAt;
+      report.failedAt = input.reportFailedAt !== undefined ? input.reportFailedAt : report.failedAt;
       report.updatedAt = new Date("2026-04-07T12:05:00.000Z");
     },
 
@@ -543,6 +560,7 @@ function createRepositoryStub() {
           fallbackPlanApplied: null,
           limitations: [],
           manifest: {
+            plannedUrls: ["https://openai.com/", "https://openai.com/about", "https://openai.com/products"],
             visitedUrls: ["https://openai.com/"],
             pdfUrls: ["https://openai.com/investors/annual-report.pdf"],
             blockedUrls: [],
@@ -643,6 +661,50 @@ describe("createReportPipelineRunner", () => {
     expect(stub.pdfExportInvocations()).toBe(1);
     expect(stub.artifacts).toHaveLength(2);
     expect(stub.recentEvents.length).toBeGreaterThanOrEqual(16);
+  });
+
+  it("marks the report successful as soon as the core brief exists, before optional enrichment finishes", async () => {
+    const stub = createRepositoryStub();
+    let releaseEnrichment!: () => void;
+    let notifyEnrichmentStarted!: () => void;
+    const enrichmentStarted = new Promise<void>((resolve) => {
+      notifyEnrichmentStarted = resolve;
+    });
+    const enrichmentGate = new Promise<void>((resolve) => {
+      releaseEnrichment = resolve;
+    });
+    const runner = createReportPipelineRunner({
+      repository: stub.repository,
+      crawler: stub.crawler,
+      researchService: {
+        ...stub.researchService,
+        async enrichExternalSources() {
+          notifyEnrichmentStarted();
+          await enrichmentGate;
+          return stub.researchService.enrichExternalSources();
+        },
+      },
+      accountPlanService: stub.accountPlanService,
+      exportService: stub.exportService,
+    });
+
+    const runPromise = runner.processReportRun({
+      runId: 11,
+      trigger: "inline",
+    });
+
+    await enrichmentStarted;
+
+    expect(stub.report.status).toBe("ready_with_limited_coverage");
+    expect(stub.report.completedAt).not.toBeNull();
+    expect(stub.run.status).toBe("fetching");
+    expect(stub.run.stepKey).toBe("enrich_external_sources");
+
+    releaseEnrichment();
+    await runPromise;
+
+    expect(stub.report.status).toBe("ready");
+    expect(stub.run.status).toBe("completed");
   });
 
   it("is safe to call again after the run is already completed", async () => {
@@ -792,7 +854,7 @@ describe("createReportPipelineRunner", () => {
       }),
     ).rejects.toThrow("Transient upstream timeout");
 
-    expect(stub.report.status).toBe("running");
+    expect(stub.report.status).toBe("ready_with_limited_coverage");
     expect(stub.run.status).toBe("fetching");
     expect(stub.run.stepKey).toBe("enrich_external_sources");
     expect(stub.run.statusMessage).toContain("will retry automatically");
@@ -803,6 +865,13 @@ describe("createReportPipelineRunner", () => {
       runId: 11,
       trigger: "inline",
     });
+
+    if (stub.run.status !== "completed") {
+      await runner.processReportRun({
+        runId: 11,
+        trigger: "inline",
+      });
+    }
 
     expect(stub.report.status).toBe("ready");
     expect(stub.run.status).toBe("completed");
@@ -887,6 +956,7 @@ describe("createReportPipelineRunner", () => {
             fallbackPlanApplied: "shallow_first_party",
             limitations: ["limited_first_party_coverage"],
             manifest: {
+              plannedUrls: ["https://openai.com/", "https://openai.com/about", "https://openai.com/products"],
               visitedUrls: ["https://openai.com/", "https://openai.com/about"],
               pdfUrls: [],
               blockedUrls: ["https://openai.com/products"],

@@ -126,6 +126,41 @@ function createMinimalAccountPlan() {
   };
 }
 
+function createMinimalResearchSummary() {
+  return {
+    companyIdentity: {
+      companyName: "Example",
+      archetype: "B2B software vendor",
+      businessModel: "Enterprise software",
+      industry: "Software",
+      publicCompany: false,
+      headquarters: null,
+      sourceIds: [1],
+    },
+    growthPriorities: [],
+    aiMaturityEstimate: {
+      level: "moderate" as const,
+      rationale: "Public materials indicate platform and support scale.",
+      sourceIds: [1],
+    },
+    regulatorySensitivity: {
+      level: "medium" as const,
+      rationale: "The company handles operational workflows with trust expectations.",
+      sourceIds: [1],
+    },
+    notableProductSignals: [],
+    notableHiringSignals: [],
+    notableTrustSignals: [],
+    complaintThemes: [],
+    leadershipSocialThemes: [],
+    researchCompletenessScore: 68,
+    confidenceBySection: [],
+    evidenceGaps: [],
+    overallConfidence: "medium" as const,
+    sourceIds: [1],
+  };
+}
+
 function createRepositoryStub() {
   const storedReports = new Map<string, StoredReportShell>();
   const unavailableShareIds = new Set<string>();
@@ -133,6 +168,8 @@ function createRepositoryStub() {
   const storedFacts = new Map<number, Awaited<ReturnType<ReportRepository["listFactsByRunId"]>>>();
   const storedArtifacts = new Map<number, Awaited<ReturnType<ReportRepository["listArtifactsByRunId"]>>>();
   const requestRecords: Array<{ requesterHash: string; outcome: string }> = [];
+  let nextReportId = 1;
+  let nextRunId = 11;
 
   const repository: ReportRepository = {
     async isShareIdAvailable(shareId) {
@@ -140,9 +177,14 @@ function createRepositoryStub() {
     },
 
     async createQueuedReport(input) {
+      const reportId = nextReportId;
+      const runId = nextRunId;
+      nextReportId += 1;
+      nextRunId += 1;
+
       const created: CreatedQueuedReportRecord = {
         report: {
-          id: 1,
+          id: reportId,
           shareId: input.shareId,
           status: "queued",
           normalizedInputUrl: input.normalizedInputUrl,
@@ -154,8 +196,8 @@ function createRepositoryStub() {
           failedAt: null,
         },
         currentRun: {
-          id: 11,
-          reportId: 1,
+          id: runId,
+          reportId,
           attemptNumber: 1,
           status: "queued",
           executionMode: input.executionMode,
@@ -195,7 +237,27 @@ function createRepositoryStub() {
     },
 
     async findLatestReportShellByCanonicalDomain(canonicalDomain) {
-      return [...storedReports.values()].find((entry) => entry.report.canonicalDomain === canonicalDomain) ?? null;
+      return (
+        [...storedReports.values()]
+          .filter((entry) => entry.report.canonicalDomain === canonicalDomain)
+          .sort((left, right) => right.report.updatedAt.getTime() - left.report.updatedAt.getTime())[0] ?? null
+      );
+    },
+
+    async findLatestReadyReportShellByCanonicalDomain(canonicalDomain) {
+      return (
+        [...storedReports.values()]
+          .filter(
+            (entry) =>
+              entry.report.canonicalDomain === canonicalDomain &&
+              ["ready", "ready_with_limited_coverage"].includes(entry.report.status),
+          )
+          .sort((left, right) => {
+            const leftCompletedAt = left.report.completedAt?.getTime() ?? 0;
+            const rightCompletedAt = right.report.completedAt?.getTime() ?? 0;
+            return rightCompletedAt - leftCompletedAt || right.report.updatedAt.getTime() - left.report.updatedAt.getTime();
+          })[0] ?? null
+      );
     },
 
     async findRunContextById() {
@@ -242,6 +304,8 @@ function createRepositoryStub() {
     },
 
     async setRunDispatchState({ runId, executionMode, queueMessageId, statusMessage }) {
+      const updatedAt = new Date();
+
       for (const entry of storedReports.values()) {
         if (entry.currentRun?.id === runId) {
           entry.currentRun = {
@@ -249,11 +313,11 @@ function createRepositoryStub() {
             executionMode,
             queueMessageId: queueMessageId ?? null,
             statusMessage,
-            updatedAt: new Date("2026-04-07T12:01:00.000Z"),
+            updatedAt,
           };
           entry.report = {
             ...entry.report,
-            updatedAt: new Date("2026-04-07T12:01:00.000Z"),
+            updatedAt,
           };
         }
       }
@@ -420,6 +484,9 @@ describe("createReportService", () => {
     stored.currentRun.status = "completed";
     stored.currentRun.completedAt = new Date();
     stored.currentRun.statusMessage = "Reusing a recent completed report.";
+    stored.currentRun.researchSummary = createMinimalResearchSummary();
+    stored.currentRun.accountPlan = createMinimalAccountPlan();
+    stored.currentRun.accountPlan.topUseCases = stored.currentRun.accountPlan.candidateUseCases.slice(0, 3);
 
     const reused = await service.createReport("https://www.example.com/about", {
       requesterHash: "reuse-hash",
@@ -503,6 +570,78 @@ describe("createReportService", () => {
     expect(status?.result.label).toBe("Limited coverage");
   });
 
+  it("reuses a stale cached brief immediately and keeps refresh work off the first render", async () => {
+    const { repository, storedReports } = createRepositoryStub();
+    const generatedIds = ["atlas12345", "atlasrefresh1"];
+    const dispatchCalls: number[] = [];
+    const service = createReportService({
+      repository,
+      shareIdGenerator: () => {
+        const next = generatedIds.shift();
+
+        if (!next) {
+          throw new Error("Expected another generated ID");
+        }
+
+        return next;
+      },
+      dispatcher: {
+        resolvePreferredExecutionMode: () => "inline",
+        dispatch: async ({ runId }) => {
+          dispatchCalls.push(runId);
+
+          return {
+            executionMode: "inline" as const,
+            queueMessageId: null,
+            statusMessage: "Report run started inline for local development.",
+          };
+        },
+      },
+    });
+
+    const created = await service.createReport("example.com");
+    const cached = storedReports.get(created.shareId);
+
+    if (!cached?.currentRun) {
+      throw new Error("Expected cached run");
+    }
+
+    const staleCompletedAt = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000);
+    cached.report.status = "ready";
+    cached.report.completedAt = staleCompletedAt;
+    cached.report.updatedAt = staleCompletedAt;
+    cached.currentRun.status = "completed";
+    cached.currentRun.completedAt = staleCompletedAt;
+    cached.currentRun.updatedAt = staleCompletedAt;
+    cached.currentRun.researchSummary = createMinimalResearchSummary();
+    cached.currentRun.accountPlan = createMinimalAccountPlan();
+    cached.currentRun.accountPlan.topUseCases = cached.currentRun.accountPlan.candidateUseCases.slice(0, 3);
+
+    const reused = await service.createReport("https://www.example.com/about", {
+      requesterHash: "cache-hit-hash",
+    });
+    const document = await service.getReportDocument(reused.shareId);
+
+    expect(reused.shareId).toBe(created.shareId);
+    expect(reused.reuseReason).toBe("cached_completed");
+    expect(document?.currentRun?.accountPlan?.topUseCases).toHaveLength(3);
+    expect(storedReports.size).toBe(2);
+    expect(dispatchCalls).toHaveLength(2);
+
+    const refreshEntry = [...storedReports.values()].find((entry) => entry.report.shareId !== created.shareId);
+
+    expect(refreshEntry?.report.status).toBe("queued");
+    expect(refreshEntry?.currentRun?.status).toBe("queued");
+
+    const reusedAgain = await service.createReport("https://example.com/pricing", {
+      requesterHash: "cache-hit-hash-2",
+    });
+
+    expect(reusedAgain.shareId).toBe(created.shareId);
+    expect(reusedAgain.reuseReason).toBe("cached_completed");
+    expect(dispatchCalls).toHaveLength(2);
+  });
+
   it("rate limits repeated new report creation attempts for the same requester", async () => {
     const { repository, requestRecords } = createRepositoryStub();
     const service = createReportService({
@@ -546,6 +685,64 @@ describe("createReportService", () => {
     expect(status?.statusUrl).toBe(`/api/reports/${created.shareId}/status`);
     expect(status?.pollAfterMs).toBe(2000);
     expect(status?.isTerminal).toBe(false);
+  });
+
+  it("treats a ready core brief as terminal even while optional work is still running", async () => {
+    const { repository, storedReports } = createRepositoryStub();
+    const service = createReportService({ repository });
+    const created = await service.createReport("example.com");
+    const stored = storedReports.get(created.shareId);
+
+    if (!stored?.currentRun) {
+      throw new Error("Expected stored run");
+    }
+
+    stored.report.status = "ready_with_limited_coverage";
+    stored.report.completedAt = new Date("2026-04-07T12:02:00.000Z");
+    stored.currentRun.status = "synthesizing";
+    stored.currentRun.stepKey = "export_markdown";
+    stored.currentRun.statusMessage = "Export markdown started.";
+    stored.currentRun.researchSummary = {
+      companyIdentity: {
+        companyName: "Example",
+        archetype: "B2B software vendor",
+        businessModel: "Enterprise software",
+        industry: "Software",
+        publicCompany: false,
+        headquarters: null,
+        sourceIds: [1],
+      },
+      growthPriorities: [],
+      aiMaturityEstimate: {
+        level: "moderate",
+        rationale: "Public materials indicate platform and support scale.",
+        sourceIds: [1],
+      },
+      regulatorySensitivity: {
+        level: "medium",
+        rationale: "The company handles operational workflows with trust expectations.",
+        sourceIds: [1],
+      },
+      notableProductSignals: [],
+      notableHiringSignals: [],
+      notableTrustSignals: [],
+      complaintThemes: [],
+      leadershipSocialThemes: [],
+      researchCompletenessScore: 68,
+      confidenceBySection: [],
+      evidenceGaps: ["Markdown export is still pending."],
+      overallConfidence: "medium",
+      sourceIds: [1],
+    };
+    stored.currentRun.accountPlan = createMinimalAccountPlan();
+    stored.currentRun.accountPlan.topUseCases = stored.currentRun.accountPlan.candidateUseCases.slice(0, 3);
+
+    const status = await service.getReportStatusShell(created.shareId);
+
+    expect(status?.report.status).toBe("ready_with_limited_coverage");
+    expect(status?.currentRun?.status).toBe("synthesizing");
+    expect(status?.isTerminal).toBe(true);
+    expect(status?.message).toContain("core brief is ready");
   });
 
   it("does not treat an empty completed shell as a successful report", async () => {

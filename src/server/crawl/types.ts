@@ -49,9 +49,10 @@ export type CrawlIngestionResult = {
   dedupedSources: number;
   sourceIds: number[];
   coverageStatus: "broad" | "limited" | "minimal";
-  fallbackPlanApplied: "shallow_first_party" | "public_web_enrichment" | null;
+  fallbackPlanApplied: "shallow_first_party" | "search_first" | null;
   limitations: string[];
   manifest: {
+    plannedUrls: string[];
     visitedUrls: string[];
     pdfUrls: string[];
     blockedUrls: string[];

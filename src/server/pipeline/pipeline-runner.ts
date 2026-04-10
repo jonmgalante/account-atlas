@@ -17,6 +17,7 @@ import { drizzleReportRepository } from "@/server/repositories/report-repository
 import { PipelineRunNotFoundError, PipelineStepError, getPipelineErrorDetails } from "@/server/pipeline/pipeline-errors";
 import { withTimeout } from "@/server/reliability/retry";
 import {
+  canContinueAfterCoreBriefSuccess,
   getPipelineProgressBefore,
   normalizePipelineState,
   REPORT_PIPELINE_STEPS,
@@ -291,12 +292,50 @@ function getPipelineStepRunStatus(stepKey: PipelineStepKey): StoredRunContext["r
   return REPORT_PIPELINE_STEPS.find((step) => step.key === stepKey)?.runStatus ?? "synthesizing";
 }
 
-function isReportFinalized(status: StoredRunContext["report"]["status"]) {
-  return status === "ready" || status === "ready_with_limited_coverage" || status === "failed";
+function isReportSuccessful(status: StoredRunContext["report"]["status"]) {
+  return status === "ready" || status === "ready_with_limited_coverage";
+}
+
+function isReportFailed(status: StoredRunContext["report"]["status"]) {
+  return status === "failed";
 }
 
 function isRunFinalized(status: StoredRunContext["run"]["status"]) {
   return status === "completed" || status === "failed" || status === "cancelled";
+}
+
+function shouldPreserveSuccessfulReport(input: {
+  stepKey: PipelineStepKey;
+  reportStatus: StoredRunContext["report"]["status"];
+}) {
+  return isReportSuccessful(input.reportStatus) && canContinueAfterCoreBriefSuccess(input.stepKey);
+}
+
+async function resolveReportStatusAfterStep(input: {
+  repository: ReportRepository;
+  runId: number;
+}) {
+  const refreshedContext = await input.repository.findRunContextById(input.runId);
+
+  if (!refreshedContext) {
+    throw new PipelineRunNotFoundError(input.runId);
+  }
+
+  const artifacts = await input.repository.listArtifactsByRunId(refreshedContext.run.id);
+  const coverage = summarizeRunCoverage(refreshedContext, artifacts);
+  const reportStatus: StoredRunContext["report"]["status"] = coverage.coreContractSatisfied
+    ? coverage.hasLimitedCoverage
+      ? "ready_with_limited_coverage"
+      : "ready"
+    : "running";
+
+  return {
+    context: refreshedContext,
+    artifacts,
+    coverage,
+    reportStatus,
+    reportCompletedAt: coverage.coreContractSatisfied ? refreshedContext.report.completedAt ?? new Date() : undefined,
+  };
 }
 
 function startStepHeartbeat(input: {
@@ -376,7 +415,6 @@ export function createReportPipelineRunner(dependencies: PipelineRunnerDependenc
   });
   const accountPlanService = dependencies.accountPlanService ?? createAccountPlanService({
     repository,
-    researchService,
   });
   const exportService = dependencies.exportService ?? createReportExportService({
     repository,
@@ -391,7 +429,7 @@ export function createReportPipelineRunner(dependencies: PipelineRunnerDependenc
         throw new PipelineRunNotFoundError(input.runId);
       }
 
-      if (isRunFinalized(runContext.run.status) || isReportFinalized(runContext.report.status)) {
+      if (isRunFinalized(runContext.run.status) || isReportFailed(runContext.report.status)) {
         return;
       }
 
@@ -411,7 +449,7 @@ export function createReportPipelineRunner(dependencies: PipelineRunnerDependenc
           throw new PipelineRunNotFoundError(input.runId);
         }
 
-        if (isRunFinalized(claimContext.run.status) || isReportFinalized(claimContext.report.status)) {
+        if (isRunFinalized(claimContext.run.status) || isReportFailed(claimContext.report.status)) {
           return;
         }
 
@@ -423,7 +461,12 @@ export function createReportPipelineRunner(dependencies: PipelineRunnerDependenc
           statusMessage: `${step.label} started.`,
           executionMode: claimContext.run.executionMode,
           queueMessageId: input.queueMessageId ?? claimContext.run.queueMessageId,
-          reportStatus: "running",
+          reportStatus: shouldPreserveSuccessfulReport({
+            stepKey: step.key,
+            reportStatus: claimContext.report.status,
+          })
+            ? claimContext.report.status
+            : "running",
           activeHeartbeatThresholdMs: STEP_ACTIVE_HEARTBEAT_THRESHOLD_MS,
           startedAt: claimContext.run.startedAt ?? new Date(),
           deliveryCount: input.deliveryCount ?? 1,
@@ -548,14 +591,13 @@ export function createReportPipelineRunner(dependencies: PipelineRunnerDependenc
           };
 
           const isFinalStep = step.key === "finalize_report";
+          const reportState = await resolveReportStatusAfterStep({
+            repository,
+            runId: input.runId,
+          });
           const completedAt = isFinalStep ? new Date() : null;
-          const artifacts = isFinalStep ? await repository.listArtifactsByRunId(currentContext.run.id) : [];
-          const coverage = isFinalStep ? summarizeRunCoverage(currentContext, artifacts) : null;
-          const finalReportStatus = isFinalStep
-            ? coverage?.hasLimitedCoverage
-              ? "ready_with_limited_coverage"
-              : "ready"
-            : "running";
+          const promotedCoreBrief =
+            !isReportSuccessful(currentContext.report.status) && isReportSuccessful(reportState.reportStatus);
 
           await repository.updateRunStepState({
             reportId: currentContext.report.id,
@@ -569,9 +611,30 @@ export function createReportPipelineRunner(dependencies: PipelineRunnerDependenc
             queueMessageId: input.queueMessageId ?? currentContext.run.queueMessageId,
             startedAt,
             completedAt,
-            reportStatus: finalReportStatus,
-            reportCompletedAt: completedAt,
+            reportStatus: reportState.reportStatus,
+            reportCompletedAt: reportState.reportCompletedAt,
           });
+
+          if (promotedCoreBrief) {
+            await recordPipelineEvent({
+              repository,
+              context: reportState.context,
+              level: reportState.reportStatus === "ready_with_limited_coverage" ? "warning" : "info",
+              eventType: "report.core_brief_ready",
+              stepKey: step.key,
+              message:
+                reportState.reportStatus === "ready_with_limited_coverage"
+                  ? "A usable core brief is ready. Optional enrichment or export work may still complete in the background."
+                  : "A usable core brief is ready.",
+              metadata: {
+                coverageLimitations: reportState.coverage.coverageLimitations,
+                deliveryCount: input.deliveryCount ?? 1,
+                queueMessageId: input.queueMessageId ?? currentContext.run.queueMessageId,
+                reportStatus: reportState.reportStatus,
+                trigger: input.trigger,
+              },
+            });
+          }
 
           await recordPipelineEvent({
             repository,
@@ -658,7 +721,18 @@ export function createReportPipelineRunner(dependencies: PipelineRunnerDependenc
               startedAt,
               errorCode: errorDetails.code,
               errorMessage: errorDetails.message,
-              reportStatus: "running",
+              reportStatus: shouldPreserveSuccessfulReport({
+                stepKey: step.key,
+                reportStatus: currentContext.report.status,
+              })
+                ? currentContext.report.status
+                : "running",
+              reportCompletedAt: shouldPreserveSuccessfulReport({
+                stepKey: step.key,
+                reportStatus: currentContext.report.status,
+              })
+                ? currentContext.report.completedAt ?? new Date()
+                : undefined,
             });
 
             await recordPipelineEvent({
@@ -702,11 +776,21 @@ export function createReportPipelineRunner(dependencies: PipelineRunnerDependenc
               },
             });
 
-            const fallbackMessage = await resolveFallbackForExhaustedStep({
+            let fallbackMessage = await resolveFallbackForExhaustedStep({
               repository,
               context: currentContext,
               stepKey: step.key,
             });
+
+            if (
+              !fallbackMessage &&
+              shouldPreserveSuccessfulReport({
+                stepKey: step.key,
+                reportStatus: currentContext.report.status,
+              })
+            ) {
+              fallbackMessage = `${step.label} failed after the core brief was already ready. Account Atlas kept the source-backed brief available and marked this optional stage as limited coverage.`;
+            }
 
             if (fallbackMessage) {
               const fallbackState = clonePipelineState(runningState);
@@ -726,7 +810,7 @@ export function createReportPipelineRunner(dependencies: PipelineRunnerDependenc
               await repository.updateRunStepState({
                 reportId: currentContext.report.id,
                 runId: currentContext.run.id,
-                status: getActiveRunStatusForStep(step.key),
+                status: step.key === "finalize_report" ? "completed" : getActiveRunStatusForStep(step.key),
                 stepKey: null,
                 progressPercent: step.progressPercent,
                 statusMessage: fallbackMessage,
@@ -734,9 +818,21 @@ export function createReportPipelineRunner(dependencies: PipelineRunnerDependenc
                 pipelineState: fallbackState,
                 queueMessageId: input.queueMessageId ?? currentContext.run.queueMessageId,
                 startedAt,
+                completedAt: step.key === "finalize_report" ? new Date() : null,
                 errorCode: null,
                 errorMessage: null,
-                reportStatus: "running",
+                reportStatus: shouldPreserveSuccessfulReport({
+                  stepKey: step.key,
+                  reportStatus: currentContext.report.status,
+                })
+                  ? currentContext.report.status
+                  : "running",
+                reportCompletedAt: shouldPreserveSuccessfulReport({
+                  stepKey: step.key,
+                  reportStatus: currentContext.report.status,
+                })
+                  ? currentContext.report.completedAt ?? new Date()
+                  : undefined,
               });
 
               await recordPipelineEvent({

@@ -52,6 +52,12 @@ type CreateReportOptions = {
   requesterHash?: string | null;
 };
 
+type BackgroundRefreshResult = {
+  shareId: string;
+  runId: number;
+  executionMode: CreateReportResponse["executionMode"];
+} | null;
+
 function createStatusUrl(shareId: string) {
   return `/api/reports/${shareId}/status`;
 }
@@ -244,6 +250,10 @@ function isTerminalRunStatus(status: ReportRunSummary["status"]) {
   return status === "completed" || status === "failed" || status === "cancelled";
 }
 
+function isActiveRunStatus(status: ReportRunSummary["status"]) {
+  return !isTerminalRunStatus(status);
+}
+
 function isReadyLikeReportStatus(status: ReportSummary["status"]) {
   return status === "ready" || status === "ready_with_limited_coverage";
 }
@@ -252,9 +262,30 @@ function isTerminalReportStatus(status: ReportSummary["status"]) {
   return isReadyLikeReportStatus(status) || status === "failed";
 }
 
+function hasUsableCoreBrief(shell: StoredReportShell | null) {
+  if (!shell?.currentRun || !shell.report.completedAt || !isReadyLikeReportStatus(shell.report.status)) {
+    return false;
+  }
+
+  return evaluateSellerFacingReport({
+    researchSummary: shell.currentRun.researchSummary,
+    accountPlan: shell.currentRun.accountPlan,
+  }).isSatisfied;
+}
+
+function getDomainActivityTimestamp(shell: StoredReportShell | null) {
+  return shell?.currentRun?.updatedAt ?? shell?.report.updatedAt ?? null;
+}
+
 function buildShellMessage(shell: StoredReportShell) {
   if (!shell.currentRun) {
     return "The report exists, but no run record is attached yet.";
+  }
+
+  if (isReadyLikeReportStatus(shell.report.status) && shell.currentRun.status !== "completed") {
+    return shell.report.status === "ready_with_limited_coverage"
+      ? "A usable core brief is ready. Account Atlas may still finish optional enrichment or exports in the background."
+      : "A usable core brief is ready. Optional enrichment or export work may still complete in the background.";
   }
 
   if (shell.currentRun.status === "failed") {
@@ -331,6 +362,12 @@ function buildReportSummary(shell: ReportShell) {
     researchSummary: shell.currentRun?.researchSummary,
     accountPlan: shell.currentRun?.accountPlan,
   });
+
+  if (isReadyLikeReportStatus(shell.report.status) && shell.currentRun?.status !== "completed") {
+    return shell.report.status === "ready_with_limited_coverage"
+      ? "This report already includes a usable seller-facing brief. Optional enrichment or export work may still finish in the background, so coverage can improve on refresh."
+      : "This report already includes a usable seller-facing brief. Optional enrichment or exports may still finish in the background.";
+  }
 
   if (shell.currentRun?.status === "completed" && shell.report.status === "ready_with_limited_coverage") {
     return contract.isSatisfied
@@ -535,6 +572,106 @@ function serializeCreateResponse(input: {
   } satisfies Omit<CreateReportResponse, "shareUrl" | "statusUrl">;
 }
 
+async function dispatchBackgroundRefresh(input: {
+  repository: ReportRepository;
+  dispatcher: ReturnType<typeof createPipelineDispatcher>;
+  shareIdGenerator: () => string;
+  normalizedInputUrl: string;
+  canonicalDomain: string;
+  companyName: string | null;
+}): Promise<BackgroundRefreshResult> {
+  const shareId = await generateAvailableShareId(input.repository, input.shareIdGenerator);
+  const preferredExecutionMode = input.dispatcher.resolvePreferredExecutionMode();
+  const created = await input.repository.createQueuedReport({
+    shareId,
+    normalizedInputUrl: input.normalizedInputUrl,
+    canonicalDomain: input.canonicalDomain,
+    companyName: input.companyName,
+    executionMode: preferredExecutionMode,
+  });
+
+  try {
+    const dispatchResult = await input.dispatcher.dispatch({
+      runId: created.currentRun.id,
+    });
+
+    await input.repository.setRunDispatchState({
+      reportId: created.report.id,
+      runId: created.currentRun.id,
+      executionMode: dispatchResult.executionMode,
+      queueMessageId: dispatchResult.queueMessageId,
+      statusMessage: dispatchResult.statusMessage,
+    });
+
+    await input.repository.appendRunEvent({
+      reportId: created.report.id,
+      runId: created.currentRun.id,
+      level: "info",
+      eventType: "pipeline.dispatched",
+      message: dispatchResult.statusMessage,
+      metadata: {
+        executionMode: dispatchResult.executionMode,
+        queueMessageId: dispatchResult.queueMessageId,
+        refreshReason: "stale_domain_cache",
+      },
+    });
+
+    logServerEvent("info", "report.cache_refresh.started", {
+      canonicalDomain: input.canonicalDomain,
+      shareId,
+      runId: created.currentRun.id,
+      executionMode: dispatchResult.executionMode,
+    });
+
+    return {
+      shareId,
+      runId: created.currentRun.id,
+      executionMode: dispatchResult.executionMode,
+    };
+  } catch (error) {
+    const failedAt = new Date();
+    const errorMessage = error instanceof Error ? error.message : "Unable to start the background refresh.";
+
+    await input.repository.updateRunStepState({
+      reportId: created.report.id,
+      runId: created.currentRun.id,
+      status: "failed",
+      stepKey: null,
+      progressPercent: 0,
+      statusMessage: "The background refresh could not be dispatched.",
+      executionMode: preferredExecutionMode,
+      pipelineState: created.currentRun.pipelineState,
+      queueMessageId: null,
+      failedAt,
+      errorCode: "PIPELINE_DISPATCH_FAILED",
+      errorMessage,
+      reportStatus: "failed",
+      reportFailedAt: failedAt,
+    });
+
+    await input.repository.appendRunEvent({
+      reportId: created.report.id,
+      runId: created.currentRun.id,
+      level: "error",
+      eventType: "pipeline.dispatch.failed",
+      message: `Failed to dispatch the background refresh: ${errorMessage}`,
+      metadata: {
+        executionMode: preferredExecutionMode,
+        refreshReason: "stale_domain_cache",
+      },
+    });
+
+    logServerEvent("warn", "report.cache_refresh.dispatch_failed", {
+      canonicalDomain: input.canonicalDomain,
+      shareId,
+      runId: created.currentRun.id,
+      error,
+    });
+
+    return null;
+  }
+}
+
 export function createReportService(dependencies: ReportServiceDependencies = {}) {
   const repository = dependencies.repository ?? drizzleReportRepository;
   const shareIdGenerator = dependencies.shareIdGenerator ?? createShareId;
@@ -548,14 +685,83 @@ export function createReportService(dependencies: ReportServiceDependencies = {}
       const normalizedInputUrl = normalizeCompanyUrl(companyUrl);
       const canonicalDomain = extractCanonicalDomain(normalizedInputUrl);
       const requesterHash = options.requesterHash ?? "anonymous-requester";
-      const latestByDomain = await repository.findLatestReportShellByCanonicalDomain(canonicalDomain);
+      const [latestByDomain, latestReadyByDomain] = await Promise.all([
+        repository.findLatestReportShellByCanonicalDomain(canonicalDomain),
+        repository.findLatestReadyReportShellByCanonicalDomain?.(canonicalDomain) ??
+          repository.findLatestReportShellByCanonicalDomain(canonicalDomain),
+      ]);
+
+      const recentReadyThreshold = new Date(Date.now() - serverEnv.REPORT_RECENT_REUSE_WINDOW_MS);
+      const activeCooldownThreshold = new Date(Date.now() - serverEnv.REPORT_DOMAIN_ACTIVE_COOLDOWN_MS);
+      const failedCooldownThreshold = new Date(Date.now() - serverEnv.REPORT_DOMAIN_FAILED_COOLDOWN_MS);
+      const latestUsableByDomain = hasUsableCoreBrief(latestReadyByDomain)
+        ? latestReadyByDomain
+        : hasUsableCoreBrief(latestByDomain)
+          ? latestByDomain
+          : null;
+
+      if (latestUsableByDomain?.currentRun) {
+        const latestActivityAt = getDomainActivityTimestamp(latestByDomain);
+        const activeRefreshInFlight = Boolean(
+          latestByDomain?.currentRun &&
+            latestByDomain.report.id !== latestUsableByDomain.report.id &&
+            isActiveRunStatus(latestByDomain.currentRun.status) &&
+            latestActivityAt &&
+            latestActivityAt >= activeCooldownThreshold,
+        );
+        const usableCompletedAt = latestUsableByDomain.report.completedAt;
+        const usableIsRecent = Boolean(usableCompletedAt && usableCompletedAt >= recentReadyThreshold);
+        let backgroundRefresh: BackgroundRefreshResult = null;
+
+        if (!usableIsRecent && !activeRefreshInFlight) {
+          backgroundRefresh = await dispatchBackgroundRefresh({
+            repository,
+            dispatcher,
+            shareIdGenerator,
+            normalizedInputUrl,
+            canonicalDomain,
+            companyName: latestUsableByDomain.report.companyName,
+          });
+        }
+
+        await repository.recordReportRequest({
+          requesterHash,
+          normalizedInputUrl,
+          canonicalDomain,
+          outcome: "reused_recent_completed",
+          reportId: latestUsableByDomain.report.id,
+          shareId: latestUsableByDomain.report.shareId,
+          metadata: {
+            cacheAge: usableIsRecent ? "recent" : "stale",
+            activeRefreshInFlight,
+            backgroundRefreshShareId: backgroundRefresh?.shareId ?? null,
+            backgroundRefreshRunId: backgroundRefresh?.runId ?? null,
+          },
+        });
+
+        logServerEvent(
+          "info",
+          usableIsRecent ? "report.create.reused_recent_completed" : "report.create.reused_cached_completed",
+          {
+            canonicalDomain,
+            shareId: latestUsableByDomain.report.shareId,
+            backgroundRefreshShareId: backgroundRefresh?.shareId ?? null,
+            activeRefreshInFlight,
+          },
+        );
+
+        return serializeCreateResponse({
+          shell: latestUsableByDomain,
+          disposition: "reused",
+          reuseReason: usableIsRecent ? "recent_completed" : "cached_completed",
+        });
+      }
 
       if (latestByDomain?.currentRun) {
-        const recentReadyThreshold = new Date(Date.now() - serverEnv.REPORT_RECENT_REUSE_WINDOW_MS);
-        const activeCooldownThreshold = new Date(Date.now() - serverEnv.REPORT_DOMAIN_ACTIVE_COOLDOWN_MS);
-        const failedCooldownThreshold = new Date(Date.now() - serverEnv.REPORT_DOMAIN_FAILED_COOLDOWN_MS);
+        const latestActivityAt = getDomainActivityTimestamp(latestByDomain) ?? latestByDomain.report.updatedAt;
 
         if (
+          hasUsableCoreBrief(latestByDomain) &&
           isReadyLikeReportStatus(latestByDomain.report.status) &&
           latestByDomain.report.completedAt &&
           latestByDomain.report.completedAt >= recentReadyThreshold
@@ -582,8 +788,8 @@ export function createReportService(dependencies: ReportServiceDependencies = {}
         }
 
         if (
-          ["queued", "running"].includes(latestByDomain.report.status) &&
-          latestByDomain.report.updatedAt >= activeCooldownThreshold
+          isActiveRunStatus(latestByDomain.currentRun.status) &&
+          latestActivityAt >= activeCooldownThreshold
         ) {
           await repository.recordReportRequest({
             requesterHash,
@@ -857,7 +1063,11 @@ export function createReportService(dependencies: ReportServiceDependencies = {}
         }),
         recentEvents: shell.recentEvents.map(serializeEvent),
         pollAfterMs: STATUS_POLL_INTERVAL_MS,
-        isTerminal: currentRun ? isTerminalRunStatus(currentRun.status) : isTerminalReportStatus(shell.report.status),
+        isTerminal: isReadyLikeReportStatus(shell.report.status)
+          ? true
+          : currentRun
+            ? isTerminalRunStatus(currentRun.status)
+            : isTerminalReportStatus(shell.report.status),
         message: buildShellMessage(shell),
       };
     },
