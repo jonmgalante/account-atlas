@@ -107,15 +107,65 @@ function createStepHandlers(
     stepKey: "export_markdown" | "export_pdf";
     exportOperation: () => Promise<string>;
   }) {
+    const artifactLabel = input.artifactType === "pdf" ? "PDF" : "Markdown";
+
+    await recordPipelineEvent({
+      repository: input.repository,
+      context: {
+        report: input.report,
+        run: input.run,
+      },
+      level: "info",
+      eventType: `${input.stepKey}_started`,
+      stepKey: input.stepKey,
+      message: `${artifactLabel} export started.`,
+      metadata: {
+        artifactType: input.artifactType,
+      },
+    });
+
     try {
+      const message = await input.exportOperation();
+
+      await recordPipelineEvent({
+        repository: input.repository,
+        context: {
+          report: input.report,
+          run: input.run,
+        },
+        level: "info",
+        eventType: `${input.stepKey}_completed`,
+        stepKey: input.stepKey,
+        message: `${artifactLabel} export completed.`,
+        metadata: {
+          artifactType: input.artifactType,
+        },
+      });
+
       return {
-        message: await input.exportOperation(),
+        message,
         fallbackApplied: false,
       };
     } catch (error) {
-      const artifactLabel = input.artifactType === "pdf" ? "PDF" : "Markdown";
       const errorDetails = getPipelineErrorDetails(error);
       const fallbackMessage = `${artifactLabel} export failed for this run, but the report can still be shared from the web view${input.artifactType === "pdf" ? " and any available Markdown export" : ""}.`;
+
+      await recordPipelineEvent({
+        repository: input.repository,
+        context: {
+          report: input.report,
+          run: input.run,
+        },
+        level: "warning",
+        eventType: `${input.stepKey}_failed`,
+        stepKey: input.stepKey,
+        message: `${artifactLabel} export failed.`,
+        metadata: {
+          artifactType: input.artifactType,
+          errorCode: errorDetails.code,
+          errorMessage: errorDetails.message,
+        },
+      });
 
       await recordPipelineEvent({
         repository: input.repository,
@@ -442,6 +492,16 @@ export function createReportPipelineRunner(dependencies: PipelineRunnerDependenc
         deliveryCount: input.deliveryCount ?? 1,
       });
 
+      if ((input.deliveryCount ?? 1) > 1) {
+        logServerEvent("warn", "pipeline.run.redelivered", {
+          shareId: currentContext.report.shareId,
+          runId: currentContext.run.id,
+          trigger: input.trigger,
+          deliveryCount: input.deliveryCount ?? 1,
+          queueMessageId: input.queueMessageId ?? currentContext.run.queueMessageId,
+        });
+      }
+
       for (const step of REPORT_PIPELINE_STEPS) {
         const claimContext = await repository.findRunContextById(input.runId);
 
@@ -634,6 +694,26 @@ export function createReportPipelineRunner(dependencies: PipelineRunnerDependenc
                 trigger: input.trigger,
               },
             });
+
+            logServerEvent(
+              reportState.reportStatus === "ready_with_limited_coverage" ? "warn" : "info",
+              reportState.reportStatus === "ready_with_limited_coverage"
+                ? "run_completed_with_limited_coverage"
+                : "run_completed",
+              {
+                shareId: reportState.context.report.shareId,
+                runId: reportState.context.run.id,
+                stepKey: step.key,
+                trigger: input.trigger,
+                deliveryCount: input.deliveryCount ?? 1,
+                queueMessageId: input.queueMessageId ?? currentContext.run.queueMessageId,
+                coverageLimitations: reportState.coverage.coverageLimitations,
+                summary:
+                  reportState.reportStatus === "ready_with_limited_coverage"
+                    ? "A usable core brief is ready with limited coverage."
+                    : "A usable core brief is ready.",
+              },
+            );
           }
 
           await recordPipelineEvent({

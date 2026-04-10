@@ -10,6 +10,14 @@ import { createReportPipelineRunner } from "@/server/pipeline/pipeline-runner";
 const pipelineRunner = createReportPipelineRunner();
 
 export const reportRunQueueMessageHandler: MessageHandler<ReportRunQueueMessage> = async (message, metadata) => {
+  if (metadata.deliveryCount > 1) {
+    logServerEvent("warn", "queue.report_run.redelivered", {
+      runId: message.runId,
+      messageId: metadata.messageId,
+      deliveryCount: metadata.deliveryCount,
+    });
+  }
+
   logServerEvent("info", "queue.report_run.received", {
     runId: message.runId,
     messageId: metadata.messageId,

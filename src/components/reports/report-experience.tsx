@@ -186,6 +186,54 @@ function formatReportStatusLabel(status: string) {
   }
 }
 
+function getExportStatusLabel(input: {
+  artifactAvailable: boolean;
+  artifactType: "markdown" | "pdf";
+  isTerminalReport: boolean;
+  runStatus: string | null;
+}) {
+  if (input.artifactAvailable) {
+    return input.artifactType === "pdf" ? "PDF" : "Markdown";
+  }
+
+  if (input.runStatus === "completed") {
+    return input.artifactType === "pdf" ? "PDF unavailable" : "Markdown unavailable";
+  }
+
+  if (input.isTerminalReport) {
+    return input.artifactType === "pdf" ? "PDF generating" : "Markdown generating";
+  }
+
+  return input.artifactType === "pdf" ? "PDF pending" : "Markdown pending";
+}
+
+function hasDownloadableArtifact(
+  artifacts: ReportDocument["artifacts"],
+  artifactType: "markdown" | "pdf",
+) {
+  return artifacts.some(
+    (artifact) => artifact.artifactType === artifactType && typeof artifact.downloadPath === "string",
+  );
+}
+
+async function fetchReportDocument(shareId: string) {
+  const response = await fetch(`/api/reports/${shareId}`, {
+    cache: "no-store",
+  });
+
+  if (!response.ok) {
+    throw new Error(`Report request failed with ${response.status}`);
+  }
+
+  const payload = (await response.json()) as ApiResponse<ReportDocument>;
+
+  if (!payload.ok) {
+    throw new Error(payload.error.message);
+  }
+
+  return payload.data;
+}
+
 function getHeroSummary({
   isBuildingReport,
   hasReadySections,
@@ -342,25 +390,13 @@ export function ReportExperience({
       setIsRefreshingDocument(true);
 
       try {
-        const response = await fetch(`/api/reports/${shareId}`, {
-          cache: "no-store",
-        });
-
-        if (!response.ok) {
-          throw new Error(`Report request failed with ${response.status}`);
-        }
-
-        const payload = (await response.json()) as ApiResponse<ReportDocument>;
-
-        if (!payload.ok) {
-          throw new Error(payload.error.message);
-        }
+        const payload = await fetchReportDocument(shareId);
 
         if (cancelled) {
           return;
         }
 
-        setDocument(payload.data);
+        setDocument(payload);
         setDocumentError(null);
       } catch {
         if (!cancelled) {
@@ -470,7 +506,7 @@ export function ReportExperience({
   });
   const activeAnchorItems = reportAnchorItemsByMode[reportMode];
   const hasSelectedSources = selectedSourceIds.length > 0;
-  const liveRun = status?.currentRun ?? currentRun;
+  const liveRun = status?.isTerminal ? document.currentRun ?? status.currentRun ?? currentRun : status?.currentRun ?? currentRun;
   const buildProgressPercent = liveRun?.progressPercent ?? null;
   const buildStepLabel = liveRun?.stepLabel ?? null;
   const lastUpdatedAt =
@@ -486,6 +522,72 @@ export function ReportExperience({
   const showEvidenceSummaryCard = researchCompleteness !== null || document.result.hasThinEvidence || !isBuildingReport;
   const showTopOpportunitySummaryCard = Boolean(topOpportunity);
   const showSummaryHighlights = showMotionSummaryCard || showEvidenceSummaryCard || showTopOpportunitySummaryCard;
+
+  useEffect(() => {
+    if (!status?.isTerminal) {
+      return;
+    }
+
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let attempts = 0;
+    const shouldRefreshExports =
+      liveRun?.status !== "completed" && (!downloadableMarkdownArtifact || !downloadablePdfArtifact);
+
+    if (!shouldRefreshExports) {
+      return;
+    }
+
+    const scheduleRefresh = (delayMs: number) => {
+      if (cancelled || attempts >= 12) {
+        return;
+      }
+
+      timer = setTimeout(async () => {
+        setIsRefreshingDocument(true);
+
+        try {
+          const nextDocument = await fetchReportDocument(shareId);
+
+          if (cancelled) {
+            return;
+          }
+
+          attempts += 1;
+          setDocument(nextDocument);
+          setDocumentError(null);
+
+          const nextRunStatus = nextDocument.currentRun?.status ?? null;
+          const nextMarkdownReady = hasDownloadableArtifact(nextDocument.artifacts, "markdown");
+          const nextPdfReady = hasDownloadableArtifact(nextDocument.artifacts, "pdf");
+
+          if (nextRunStatus !== "completed" && (!nextMarkdownReady || !nextPdfReady)) {
+            scheduleRefresh(nextMarkdownReady ? 4_000 : 1_500);
+          }
+        } catch {
+          if (!cancelled) {
+            attempts += 1;
+            setDocumentError("Unable to refresh the full report payload right now.");
+            scheduleRefresh(4_000);
+          }
+        } finally {
+          if (!cancelled) {
+            setIsRefreshingDocument(false);
+          }
+        }
+      }, delayMs);
+    };
+
+    scheduleRefresh(downloadableMarkdownArtifact ? 4_000 : 1_500);
+
+    return () => {
+      cancelled = true;
+
+      if (timer) {
+        clearTimeout(timer);
+      }
+    };
+  }, [downloadableMarkdownArtifact, downloadablePdfArtifact, liveRun?.status, shareId, status?.isTerminal]);
 
   const handleSelectSources = (sourceIds: number[]) => {
     setSelectedSourceIds(sourceIds);
@@ -608,7 +710,12 @@ export function ReportExperience({
                     ) : (
                       <Button type="button" size="sm" variant="outline" disabled>
                         <Download className="h-4 w-4" />
-                        Markdown {currentRun?.status === "completed" ? "unavailable" : "pending"}
+                        {getExportStatusLabel({
+                          artifactAvailable: false,
+                          artifactType: "markdown",
+                          isTerminalReport: liveReportStatus === "ready" || liveReportStatus === "ready_with_limited_coverage",
+                          runStatus: liveRun?.status ?? null,
+                        })}
                       </Button>
                     )}
                     {downloadablePdfArtifact ? (
@@ -621,7 +728,12 @@ export function ReportExperience({
                     ) : (
                       <Button type="button" size="sm" variant="outline" disabled>
                         <Download className="h-4 w-4" />
-                        PDF {currentRun?.status === "completed" ? "unavailable" : "pending"}
+                        {getExportStatusLabel({
+                          artifactAvailable: false,
+                          artifactType: "pdf",
+                          isTerminalReport: liveReportStatus === "ready" || liveReportStatus === "ready_with_limited_coverage",
+                          runStatus: liveRun?.status ?? null,
+                        })}
                       </Button>
                     )}
                     {currentRun?.status === "failed" ? (

@@ -742,6 +742,7 @@ describe("createReportService", () => {
     expect(status?.report.status).toBe("ready_with_limited_coverage");
     expect(status?.currentRun?.status).toBe("synthesizing");
     expect(status?.isTerminal).toBe(true);
+    expect(status?.pollAfterMs).toBe(0);
     expect(status?.message).toContain("core brief is ready");
   });
 

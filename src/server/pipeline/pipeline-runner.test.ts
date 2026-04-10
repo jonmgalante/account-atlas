@@ -660,6 +660,11 @@ describe("createReportPipelineRunner", () => {
     expect(stub.markdownExportInvocations()).toBe(1);
     expect(stub.pdfExportInvocations()).toBe(1);
     expect(stub.artifacts).toHaveLength(2);
+    expect(stub.recentEvents.some((event) => event.eventType === "export_markdown_started")).toBe(true);
+    expect(stub.recentEvents.some((event) => event.eventType === "export_markdown_completed")).toBe(true);
+    expect(stub.recentEvents.some((event) => event.eventType === "export_pdf_started")).toBe(true);
+    expect(stub.recentEvents.some((event) => event.eventType === "export_pdf_completed")).toBe(true);
+    expect(stub.recentEvents.some((event) => event.eventType === "run_completed")).toBe(true);
     expect(stub.recentEvents.length).toBeGreaterThanOrEqual(16);
   });
 
@@ -695,10 +700,13 @@ describe("createReportPipelineRunner", () => {
 
     await enrichmentStarted;
 
-    expect(stub.report.status).toBe("ready_with_limited_coverage");
+    expect(stub.report.status).toBe("ready");
     expect(stub.report.completedAt).not.toBeNull();
     expect(stub.run.status).toBe("fetching");
     expect(stub.run.stepKey).toBe("enrich_external_sources");
+    expect(stub.run.pipelineState.steps.export_markdown.status).toBe("completed");
+    expect(stub.run.pipelineState.steps.export_pdf.status).toBe("completed");
+    expect(stub.artifacts.some((artifact) => artifact.artifactType === "markdown")).toBe(true);
 
     releaseEnrichment();
     await runPromise;
@@ -754,6 +762,9 @@ describe("createReportPipelineRunner", () => {
     expect(stub.report.status).toBe("ready_with_limited_coverage");
     expect(stub.artifacts.some((artifact) => artifact.artifactType === "markdown")).toBe(true);
     expect(stub.artifacts.some((artifact) => artifact.artifactType === "pdf")).toBe(false);
+    expect(stub.recentEvents.some((event) => event.eventType === "export_markdown_completed")).toBe(true);
+    expect(stub.recentEvents.some((event) => event.eventType === "export_pdf_started")).toBe(true);
+    expect(stub.recentEvents.some((event) => event.eventType === "export_pdf_failed")).toBe(true);
     expect(stub.recentEvents.some((event) => event.eventType === "fallback_applied")).toBe(true);
     expect(stub.recentEvents.some((event) => event.eventType === "run_completed_with_limited_coverage")).toBe(true);
     expect(stub.run.pipelineState.steps.export_pdf.fallbackApplied).toBe(true);
@@ -783,6 +794,9 @@ describe("createReportPipelineRunner", () => {
     expect(stub.report.status).toBe("ready_with_limited_coverage");
     expect(stub.artifacts.some((artifact) => artifact.artifactType === "markdown")).toBe(false);
     expect(stub.artifacts.some((artifact) => artifact.artifactType === "pdf")).toBe(true);
+    expect(stub.recentEvents.some((event) => event.eventType === "export_markdown_started")).toBe(true);
+    expect(stub.recentEvents.some((event) => event.eventType === "export_markdown_failed")).toBe(true);
+    expect(stub.recentEvents.some((event) => event.eventType === "export_pdf_completed")).toBe(true);
     expect(stub.recentEvents.some((event) => event.eventType === "fallback_applied")).toBe(true);
     expect(stub.recentEvents.some((event) => event.eventType === "run_completed_with_limited_coverage")).toBe(true);
     expect(stub.run.pipelineState.steps.export_markdown.fallbackApplied).toBe(true);
@@ -854,7 +868,7 @@ describe("createReportPipelineRunner", () => {
       }),
     ).rejects.toThrow("Transient upstream timeout");
 
-    expect(stub.report.status).toBe("ready_with_limited_coverage");
+    expect(stub.report.status).toBe("ready");
     expect(stub.run.status).toBe("fetching");
     expect(stub.run.stepKey).toBe("enrich_external_sources");
     expect(stub.run.statusMessage).toContain("will retry automatically");

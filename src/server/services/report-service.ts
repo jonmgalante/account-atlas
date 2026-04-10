@@ -38,6 +38,8 @@ import {
 
 const MAX_SHARE_ID_ATTEMPTS = 12;
 const STATUS_POLL_INTERVAL_MS = 2_000;
+const STATUS_POLL_INTERVAL_SLOW_MS = 4_000;
+const STATUS_POLL_INTERVAL_RETRY_MS = 6_000;
 const NOT_FOUND_MESSAGE = "No saved report was found for this share link.";
 const DB_UNAVAILABLE_MESSAGE =
   "Server-side persistence is not configured yet. Set DATABASE_URL and run the Drizzle migration to activate reports.";
@@ -572,6 +574,30 @@ function serializeCreateResponse(input: {
   } satisfies Omit<CreateReportResponse, "shareUrl" | "statusUrl">;
 }
 
+function getStatusPollInterval(currentRun: ReportRunSummary | null, reportStatus: ReportSummary["status"]) {
+  if (isReadyLikeReportStatus(reportStatus)) {
+    return 0;
+  }
+
+  if (!currentRun) {
+    return STATUS_POLL_INTERVAL_MS;
+  }
+
+  const currentStepState = currentRun.stepKey
+    ? currentRun.progress.steps.find((step) => step.key === currentRun.stepKey)?.status
+    : null;
+
+  if (currentStepState === "retrying") {
+    return STATUS_POLL_INTERVAL_RETRY_MS;
+  }
+
+  if (currentRun.progressPercent >= 84) {
+    return STATUS_POLL_INTERVAL_SLOW_MS;
+  }
+
+  return STATUS_POLL_INTERVAL_MS;
+}
+
 async function dispatchBackgroundRefresh(input: {
   repository: ReportRepository;
   dispatcher: ReturnType<typeof createPipelineDispatcher>;
@@ -1062,7 +1088,7 @@ export function createReportService(dependencies: ReportServiceDependencies = {}
           reportStatus: shell.report.status,
         }),
         recentEvents: shell.recentEvents.map(serializeEvent),
-        pollAfterMs: STATUS_POLL_INTERVAL_MS,
+        pollAfterMs: getStatusPollInterval(currentRun, shell.report.status),
         isTerminal: isReadyLikeReportStatus(shell.report.status)
           ? true
           : currentRun

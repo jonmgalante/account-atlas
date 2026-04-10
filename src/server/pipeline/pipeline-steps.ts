@@ -55,22 +55,22 @@ export const REPORT_PIPELINE_STEPS: ReadonlyArray<{
     runStatus: "synthesizing",
   },
   {
-    key: "enrich_external_sources",
-    label: "Enrich external sources",
-    progressPercent: 72,
-    runStatus: "fetching",
-  },
-  {
     key: "export_markdown",
     label: "Export markdown",
-    progressPercent: 84,
+    progressPercent: 72,
     runStatus: "synthesizing",
   },
   {
     key: "export_pdf",
     label: "Export PDF",
-    progressPercent: 94,
+    progressPercent: 84,
     runStatus: "synthesizing",
+  },
+  {
+    key: "enrich_external_sources",
+    label: "Enrich external sources",
+    progressPercent: 94,
+    runStatus: "fetching",
   },
   {
     key: "finalize_report",

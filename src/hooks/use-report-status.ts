@@ -18,8 +18,33 @@ export function useReportStatus({ shareId, initialStatus }: UseReportStatusOptio
   useEffect(() => {
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
+    let terminalReached = initialStatus?.isTerminal ?? false;
+    let unchangedPollCount = 0;
+    let lastStatusSignature =
+      initialStatus
+        ? JSON.stringify({
+            reportUpdatedAt: initialStatus.report.updatedAt,
+            runUpdatedAt: initialStatus.currentRun?.updatedAt ?? null,
+            stepKey: initialStatus.currentRun?.stepKey ?? null,
+            runStatus: initialStatus.currentRun?.status ?? null,
+            reportStatus: initialStatus.report.status,
+          })
+        : null;
+    let errorBackoffMs = 3_000;
+
+    const schedulePoll = (delayMs: number) => {
+      if (cancelled) {
+        return;
+      }
+
+      timer = setTimeout(poll, delayMs);
+    };
 
     const poll = async () => {
+      if (cancelled || terminalReached) {
+        return;
+      }
+
       setIsPolling(true);
 
       try {
@@ -43,9 +68,27 @@ export function useReportStatus({ shareId, initialStatus }: UseReportStatusOptio
 
         setStatus(payload.data);
         setErrorMessage(null);
+        errorBackoffMs = 3_000;
+        terminalReached = payload.data.isTerminal;
+
+        const nextSignature = JSON.stringify({
+          reportUpdatedAt: payload.data.report.updatedAt,
+          runUpdatedAt: payload.data.currentRun?.updatedAt ?? null,
+          stepKey: payload.data.currentRun?.stepKey ?? null,
+          runStatus: payload.data.currentRun?.status ?? null,
+          reportStatus: payload.data.report.status,
+        });
+
+        if (nextSignature === lastStatusSignature) {
+          unchangedPollCount += 1;
+        } else {
+          unchangedPollCount = 0;
+          lastStatusSignature = nextSignature;
+        }
 
         if (!payload.data.isTerminal) {
-          timer = setTimeout(poll, payload.data.pollAfterMs);
+          const backoffMultiplier = Math.min(4, unchangedPollCount + 1);
+          schedulePoll(Math.max(payload.data.pollAfterMs, payload.data.pollAfterMs * backoffMultiplier));
         }
       } catch {
         if (cancelled) {
@@ -53,7 +96,8 @@ export function useReportStatus({ shareId, initialStatus }: UseReportStatusOptio
         }
 
         setErrorMessage("Live status is temporarily unavailable. Account Atlas will keep retrying automatically.");
-        timer = setTimeout(poll, 3000);
+        schedulePoll(errorBackoffMs);
+        errorBackoffMs = Math.min(15_000, errorBackoffMs + 3_000);
       } finally {
         if (!cancelled) {
           setIsPolling(false);
@@ -62,7 +106,7 @@ export function useReportStatus({ shareId, initialStatus }: UseReportStatusOptio
     };
 
     if (!initialStatus || !initialStatus.isTerminal) {
-      timer = setTimeout(poll, initialStatus?.pollAfterMs ?? 0);
+      schedulePoll(initialStatus?.pollAfterMs ?? 0);
     }
 
     return () => {
