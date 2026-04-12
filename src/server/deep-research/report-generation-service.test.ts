@@ -14,6 +14,10 @@ import { createDeepResearchReportGenerationService } from "@/server/deep-researc
 import type { CanonicalAccountAtlasReport } from "@/server/deep-research/report-contract";
 import type { OpenAIResearchClient, RetrievedBackgroundResponse } from "@/server/openai/client";
 
+type CreateBackgroundStructuredOutputInput = {
+  maxOutputTokens?: number;
+};
+
 function createCanonicalReportFixture(): CanonicalAccountAtlasReport {
   return {
     company: {
@@ -563,9 +567,16 @@ function createRepositoryStub() {
   };
 }
 
-function createOpenAIClientStub(outputReport: CanonicalAccountAtlasReport) {
+function createOpenAIClientStub(
+  outputReport: CanonicalAccountAtlasReport,
+  overrides: {
+    createResponse?: RetrievedBackgroundResponse;
+    retrieveResponse?: RetrievedBackgroundResponse;
+    onCreateBackgroundStructuredOutput?: (input: CreateBackgroundStructuredOutputInput) => void;
+  } = {},
+) {
   const outputText = JSON.stringify(outputReport);
-  const createResponse: RetrievedBackgroundResponse = {
+  const createResponse: RetrievedBackgroundResponse = overrides.createResponse ?? {
     responseId: "resp_123",
     status: "queued",
     outputText: "",
@@ -582,7 +593,7 @@ function createOpenAIClientStub(outputReport: CanonicalAccountAtlasReport) {
     webSearchSources: [],
     fileSearchResults: [],
   };
-  const retrieveResponse: RetrievedBackgroundResponse = {
+  const retrieveResponse: RetrievedBackgroundResponse = overrides.retrieveResponse ?? {
     responseId: "resp_123",
     status: "completed",
     outputText,
@@ -616,7 +627,8 @@ function createOpenAIClientStub(outputReport: CanonicalAccountAtlasReport) {
     async parseStructuredOutput() {
       throw new Error("Not needed in this test");
     },
-    async createBackgroundStructuredOutput() {
+    async createBackgroundStructuredOutput(input) {
+      overrides.onCreateBackgroundStructuredOutput?.(input);
       return createResponse;
     },
     async retrieveBackgroundResponse() {
@@ -642,6 +654,7 @@ describe("createDeepResearchReportGenerationService", () => {
     });
 
     expect(stub.run.status).toBe("synthesizing");
+    expect(stub.run.progressPercent).toBe(0);
     expect(stub.run.openaiResponseId).toBe("resp_123");
     expect(stub.run.openaiResponseStatus).toBe("queued");
 
@@ -661,6 +674,67 @@ describe("createDeepResearchReportGenerationService", () => {
     expect(stub.storedUseCases).toHaveLength(3);
     expect(stub.storedStakeholders).toHaveLength(1);
     expect(stub.storedArtifacts.find((artifact) => artifact.artifactType === "structured_json")).toBeTruthy();
+  });
+
+  it("fails with a precise message when the background response hits the max output token limit", async () => {
+    const fixture = createCanonicalReportFixture();
+    let createInput: CreateBackgroundStructuredOutputInput | null = null;
+    const stub = createRepositoryStub();
+    const service = createDeepResearchReportGenerationService({
+      repository: stub.repository,
+      openAIClient: createOpenAIClientStub(fixture, {
+        retrieveResponse: {
+          responseId: "resp_123",
+          status: "incomplete",
+          outputText: "",
+          rawResponse: {
+            id: "resp_123",
+            status: "incomplete",
+            output: [],
+            usage: { output_tokens: 25_000 },
+            error: null,
+            incompleteDetails: { reason: "max_output_tokens" },
+            model: "gpt-5.4",
+            completedAt: 1_776_000_000,
+          },
+          webSearchSources: [],
+          fileSearchResults: [],
+        },
+        onCreateBackgroundStructuredOutput(input) {
+          createInput = input;
+        },
+      }),
+    });
+
+    await service.startReportRun({
+      report: stub.report,
+      run: stub.run,
+    });
+
+    expect(createInput).not.toBeNull();
+    const startedCreateInput: CreateBackgroundStructuredOutputInput = createInput ?? {};
+    expect(startedCreateInput.maxOutputTokens).toBe(25_000);
+
+    const shell = await service.syncReportRun({
+      shareId: stub.report.shareId,
+    });
+
+    expect(shell?.report.status).toBe("failed");
+    expect(shell?.currentRun?.status).toBe("failed");
+    expect(stub.run.openaiResponseStatus).toBe("incomplete");
+    expect(stub.run.errorCode).toBe("OPENAI_RESPONSE_INCOMPLETE");
+    expect(stub.run.errorMessage).toBe(
+      "The background response hit the max output token limit before the saved brief finished.",
+    );
+    expect(stub.run.openaiResponseMetadata).toMatchObject({
+      incompleteDetails: {
+        reason: "max_output_tokens",
+      },
+    });
+    expect(stub.recentEvents.at(-1)?.eventType).toBe("deep_research.failed");
+    expect(stub.recentEvents.at(-1)?.message).toBe(
+      "The background response hit the max output token limit before the saved brief finished.",
+    );
   });
 
   it("downgrades off-target seller-workflow opportunities into a grounded fallback brief", async () => {

@@ -101,6 +101,7 @@ type ThinPublishSafetyEvaluation = {
 
 const CREATE_TIMEOUT_MS = 45_000;
 const RETRIEVE_TIMEOUT_MS = 20_000;
+const DEEP_RESEARCH_MAX_OUTPUT_TOKENS = 25_000;
 const STATUS_MESSAGE_STARTED = "Started the deep research background job.";
 const STATUS_MESSAGE_RUNNING = "The deep research brief is running in the background.";
 const STATUS_MESSAGE_QUEUED = "The deep research brief is queued with OpenAI.";
@@ -114,6 +115,17 @@ const WEB_SEARCH_TOOL = {
     timezone: "America/New_York",
   },
 } as const;
+
+function getDeepResearchProgressPercentForResponseStatus(status: string | null | undefined) {
+  switch (status) {
+    case "in_progress":
+      return 55;
+    case "completed":
+      return 90;
+    default:
+      return 0;
+  }
+}
 
 function uniqueNumberList(values: Array<number | null | undefined>) {
   return [...new Set(values.filter((value): value is number => typeof value === "number" && Number.isInteger(value) && value > 0))];
@@ -337,6 +349,29 @@ function buildResponseDebugMetadata(response: RetrievedBackgroundResponse) {
     error: response.rawResponse.error,
     incompleteDetails: response.rawResponse.incompleteDetails,
   } satisfies Record<string, unknown>;
+}
+
+function getIncompleteResponseReason(response: RetrievedBackgroundResponse) {
+  const incompleteDetails = response.rawResponse.incompleteDetails;
+
+  if (!incompleteDetails || typeof incompleteDetails !== "object") {
+    return null;
+  }
+
+  const reason = (incompleteDetails as { reason?: unknown }).reason;
+
+  return reason === "max_output_tokens" || reason === "content_filter" ? reason : null;
+}
+
+function buildIncompleteResponseMessage(response: RetrievedBackgroundResponse) {
+  switch (getIncompleteResponseReason(response)) {
+    case "max_output_tokens":
+      return "The background response hit the max output token limit before the saved brief finished.";
+    case "content_filter":
+      return "The background response was stopped by content filtering before the saved brief finished.";
+    default:
+      return "The background response ended before the saved brief finished.";
+  }
 }
 
 async function persistOpenAIState(
@@ -1369,7 +1404,7 @@ async function failRun(input: {
     runId: input.run.id,
     status: "failed",
     stepKey: "generate_account_plan",
-    progressPercent: 62,
+    progressPercent: getDeepResearchProgressPercentForResponseStatus(input.run.openaiResponseStatus),
     statusMessage: input.errorMessage,
     executionMode: input.run.executionMode,
     pipelineState,
@@ -1406,7 +1441,7 @@ async function cancelRun(input: {
     runId: input.run.id,
     status: "cancelled",
     stepKey: null,
-    progressPercent: 62,
+    progressPercent: getDeepResearchProgressPercentForResponseStatus(input.run.openaiResponseStatus),
     statusMessage: "The deep research background job was cancelled.",
     executionMode: input.run.executionMode,
     pipelineState: buildCancelledPipelineState(input.run.pipelineState, cancelledAt),
@@ -1444,7 +1479,7 @@ export function createDeepResearchReportGenerationService(
         runId: input.run.id,
         status: "synthesizing",
         stepKey: "generate_account_plan",
-        progressPercent: 62,
+        progressPercent: 0,
         statusMessage: STATUS_MESSAGE_STARTED,
         executionMode: "inline" satisfies PipelineExecutionMode,
         pipelineState,
@@ -1491,7 +1526,8 @@ export function createDeepResearchReportGenerationService(
             canonical_domain: input.report.canonicalDomain,
             generation_path: "single_deep_research",
           },
-          maxOutputTokens: 8_000,
+          // Large structured reports need room for both reasoning and the final JSON payload.
+          maxOutputTokens: DEEP_RESEARCH_MAX_OUTPUT_TOKENS,
           timeoutMs: CREATE_TIMEOUT_MS,
           maxAttempts: 1,
         });
@@ -1577,7 +1613,7 @@ export function createDeepResearchReportGenerationService(
           runId: shell.currentRun.id,
           status: "synthesizing",
           stepKey: "generate_account_plan",
-          progressPercent: 62,
+          progressPercent: getDeepResearchProgressPercentForResponseStatus(response.status),
           statusMessage: response.status === "queued" ? STATUS_MESSAGE_QUEUED : STATUS_MESSAGE_RUNNING,
           executionMode: shell.currentRun.executionMode,
           pipelineState: normalizePipelineState(shell.currentRun.pipelineState),
@@ -1600,6 +1636,17 @@ export function createDeepResearchReportGenerationService(
       }
 
       if (response.status === "failed" || response.status === "incomplete") {
+        if (response.status === "incomplete") {
+          logServerEvent("warn", "deep_research.incomplete", {
+            shareId: shell.report.shareId,
+            runId: shell.currentRun.id,
+            responseId: response.responseId,
+            incompleteReason: getIncompleteResponseReason(response),
+            incompleteDetails: response.rawResponse.incompleteDetails,
+            usage: response.rawResponse.usage,
+          });
+        }
+
         const errorMessage =
           typeof response.rawResponse.error === "object" &&
           response.rawResponse.error &&
@@ -1607,8 +1654,8 @@ export function createDeepResearchReportGenerationService(
           typeof (response.rawResponse.error as Record<string, unknown>).message === "string"
             ? ((response.rawResponse.error as Record<string, unknown>).message as string)
             : response.status === "incomplete"
-              ? "The background response ended before the canonical report finished."
-              : "The background response failed before the canonical report completed.";
+              ? buildIncompleteResponseMessage(response)
+              : "The background response failed before the saved brief finished.";
 
         await failRun({
           repository,

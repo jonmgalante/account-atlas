@@ -449,7 +449,7 @@ function createReportGenerationStub(input: {
       shell.report.updatedAt = now;
       shell.currentRun.status = "synthesizing";
       shell.currentRun.executionMode = "inline";
-      shell.currentRun.progressPercent = 62;
+      shell.currentRun.progressPercent = 0;
       shell.currentRun.stepKey = "generate_account_plan";
       shell.currentRun.statusMessage = "Started the deep research background job.";
       shell.currentRun.startedAt = now;
@@ -834,8 +834,33 @@ describe("createReportService", () => {
 
     expect(status?.shareId).toBe(created.shareId);
     expect(status?.statusUrl).toBe(`/api/reports/${created.shareId}/status`);
+    expect(status?.currentRun?.progressPercent).toBe(0);
     expect(status?.pollAfterMs).toBe(2000);
     expect(status?.isTerminal).toBe(false);
+  });
+
+  it("derives deep-research progress from OpenAI status instead of stale stored percentages", async () => {
+    const { repository, storedReports } = createRepositoryStub();
+    const { service } = createServiceHarness({ repository, storedReports });
+    const created = await service.createReport("example.com");
+    const stored = storedReports.get(created.shareId);
+
+    if (!stored?.currentRun) {
+      throw new Error("Expected stored run");
+    }
+
+    stored.currentRun.progressPercent = 62;
+    stored.currentRun.openaiResponseStatus = "queued";
+
+    const queuedStatus = await service.getReportStatusShell(created.shareId);
+
+    expect(queuedStatus?.currentRun?.progressPercent).toBe(0);
+
+    stored.currentRun.openaiResponseStatus = "in_progress";
+
+    const runningStatus = await service.getReportStatusShell(created.shareId);
+
+    expect(runningStatus?.currentRun?.progressPercent).toBe(55);
   });
 
   it("syncs a background deep-research run to a terminal stored report", async () => {

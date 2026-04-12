@@ -212,6 +212,25 @@ function buildDeepResearchProgress(
   };
 }
 
+function deriveDeepResearchProgressPercent(
+  run: NonNullable<StoredReportShell["currentRun"]> | CreatedQueuedReportRecord["currentRun"],
+  displayStatus: ReportRunSummary["displayStatus"],
+) {
+  if (displayStatus === "completed" || displayStatus === "completed_with_grounded_fallback") {
+    return 100;
+  }
+
+  if (run.openaiResponseStatus === "completed") {
+    return 90;
+  }
+
+  if (run.openaiResponseStatus === "in_progress") {
+    return 55;
+  }
+
+  return 0;
+}
+
 function serializeRun(
   input: {
     run: StoredReportShell["currentRun"] | CreatedQueuedReportRecord["currentRun"];
@@ -236,7 +255,7 @@ function serializeRun(
     id: run.id,
     status: run.status,
     displayStatus,
-    progressPercent: run.progressPercent,
+    progressPercent: isDeepResearchRun(run) ? deriveDeepResearchProgressPercent(run, displayStatus) : run.progressPercent,
     stepKey: progress.currentStepKey ?? (isDeepResearchRun(run) ? null : coercePipelineStepKey(run.stepKey)),
     stepLabel: progress.currentStepLabel,
     executionMode: run.executionMode,
