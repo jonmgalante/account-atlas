@@ -5,6 +5,7 @@ import type {
   ReportRepository,
   StoredReportShell,
 } from "@/server/repositories/report-repository";
+import type { DeepResearchReportGenerationService } from "@/server/deep-research/report-generation-service";
 import { createReportService } from "@/server/services/report-service";
 import { createInitialPipelineState } from "@/server/pipeline/pipeline-steps";
 
@@ -207,6 +208,11 @@ function createRepositoryStub() {
           pipelineState: createInitialPipelineState(),
           queueMessageId: null,
           vectorStoreId: null,
+          openaiResponseId: null,
+          openaiResponseStatus: null,
+          openaiResponseMetadata: {},
+          openaiOutputText: null,
+          canonicalReport: null,
           researchSummary: null,
           accountPlan: null,
           errorCode: null,
@@ -331,6 +337,29 @@ function createRepositoryStub() {
       throw new Error("Not needed in this test");
     },
 
+    async setRunOpenAIState({ runId, openaiResponseId, openaiResponseStatus, openaiResponseMetadata, openaiOutputText, canonicalReport, statusMessage }) {
+      const updatedAt = new Date();
+
+      for (const entry of storedReports.values()) {
+        if (entry.currentRun?.id === runId) {
+          entry.currentRun = {
+            ...entry.currentRun,
+            ...(openaiResponseId !== undefined ? { openaiResponseId } : {}),
+            ...(openaiResponseStatus !== undefined ? { openaiResponseStatus } : {}),
+            ...(openaiResponseMetadata !== undefined ? { openaiResponseMetadata } : {}),
+            ...(openaiOutputText !== undefined ? { openaiOutputText } : {}),
+            ...(canonicalReport !== undefined ? { canonicalReport } : {}),
+            ...(statusMessage !== undefined ? { statusMessage } : {}),
+            updatedAt,
+          };
+          entry.report = {
+            ...entry.report,
+            updatedAt,
+          };
+        }
+      }
+    },
+
     async updateRunResearchSummary() {
       throw new Error("Not needed in this test");
     },
@@ -398,20 +427,97 @@ function createRepositoryStub() {
   };
 }
 
+function createReportGenerationStub(input: {
+  storedReports: Map<string, StoredReportShell>;
+  syncByShareId?: Map<string, (shell: StoredReportShell) => void | Promise<void>>;
+}) {
+  const startCalls: number[] = [];
+  const syncCalls: string[] = [];
+  const syncByShareId = input.syncByShareId ?? new Map<string, (shell: StoredReportShell) => void | Promise<void>>();
+
+  const reportGenerationService: DeepResearchReportGenerationService = {
+    async startReportRun({ report, run }) {
+      startCalls.push(run.id);
+      const shell = input.storedReports.get(report.shareId);
+      const now = new Date();
+
+      if (!shell?.currentRun) {
+        throw new Error("Expected stored run");
+      }
+
+      shell.report.status = "running";
+      shell.report.updatedAt = now;
+      shell.currentRun.status = "synthesizing";
+      shell.currentRun.executionMode = "inline";
+      shell.currentRun.progressPercent = 62;
+      shell.currentRun.stepKey = "generate_account_plan";
+      shell.currentRun.statusMessage = "Started the deep research background job.";
+      shell.currentRun.startedAt = now;
+      shell.currentRun.updatedAt = now;
+      shell.currentRun.openaiResponseId = `resp_${run.id}`;
+      shell.currentRun.openaiResponseStatus = "queued";
+      shell.currentRun.openaiResponseMetadata = {
+        status: "queued",
+      };
+    },
+
+    async syncReportRun({ shareId, shell }) {
+      syncCalls.push(shareId);
+      const currentShell = shell ?? input.storedReports.get(shareId) ?? null;
+
+      if (!currentShell) {
+        return null;
+      }
+
+      const syncHandler = syncByShareId.get(shareId);
+
+      if (syncHandler) {
+        await syncHandler(currentShell);
+      }
+
+      return input.storedReports.get(shareId) ?? currentShell;
+    },
+  };
+
+  return {
+    reportGenerationService,
+    startCalls,
+    syncCalls,
+    syncByShareId,
+  };
+}
+
+function createServiceHarness(input: {
+  repository: ReportRepository;
+  storedReports: Map<string, StoredReportShell>;
+  shareIdGenerator?: () => string;
+  syncByShareId?: Map<string, (shell: StoredReportShell) => void | Promise<void>>;
+  exportService?: NonNullable<Parameters<typeof createReportService>[0]>["exportService"];
+}) {
+  const generation = createReportGenerationStub({
+    storedReports: input.storedReports,
+    syncByShareId: input.syncByShareId,
+  });
+  const service = createReportService({
+    repository: input.repository,
+    shareIdGenerator: input.shareIdGenerator,
+    reportGenerationService: generation.reportGenerationService,
+    exportService: input.exportService,
+  });
+
+  return {
+    service,
+    generation,
+  };
+}
+
 describe("createReportService", () => {
   it("creates and dispatches a queued report with a canonical domain", async () => {
-    const { repository } = createRepositoryStub();
-    const service = createReportService({
+    const { repository, storedReports } = createRepositoryStub();
+    const { service } = createServiceHarness({
       repository,
+      storedReports,
       shareIdGenerator: () => "atlas12345",
-      dispatcher: {
-        resolvePreferredExecutionMode: () => "inline",
-        dispatch: async () => ({
-          executionMode: "inline",
-          queueMessageId: null,
-          statusMessage: "Report run started inline for local development.",
-        }),
-      },
     });
 
     const result = await service.createReport("https://www.openai.com");
@@ -423,16 +529,18 @@ describe("createReportService", () => {
     expect(result.report.normalizedInputUrl).toBe("https://www.openai.com/");
     expect(result.report.canonicalDomain).toBe("openai.com");
     expect(result.currentRun.executionMode).toBe("inline");
-    expect(result.currentRun.progress.steps).toHaveLength(9);
+    expect(result.currentRun.progress.steps).toHaveLength(3);
+    expect(result.currentRun.stepLabel).toBe("Deep research");
   });
 
   it("retries when a generated share ID is already taken", async () => {
-    const { repository, unavailableShareIds } = createRepositoryStub();
+    const { repository, unavailableShareIds, storedReports } = createRepositoryStub();
     unavailableShareIds.add("taken-id");
 
     const generatedIds = ["taken-id", "fresh-id"];
-    const service = createReportService({
+    const { service } = createServiceHarness({
       repository,
+      storedReports,
       shareIdGenerator: () => {
         const next = generatedIds.shift();
 
@@ -441,14 +549,6 @@ describe("createReportService", () => {
         }
 
         return next;
-      },
-      dispatcher: {
-        resolvePreferredExecutionMode: () => "inline",
-        dispatch: async () => ({
-          executionMode: "inline",
-          queueMessageId: null,
-          statusMessage: "Report run started inline for local development.",
-        }),
       },
     });
 
@@ -459,17 +559,10 @@ describe("createReportService", () => {
 
   it("reuses a recent completed report for the same domain", async () => {
     const { repository, storedReports } = createRepositoryStub();
-    const service = createReportService({
+    const { service } = createServiceHarness({
       repository,
+      storedReports,
       shareIdGenerator: () => "atlas12345",
-      dispatcher: {
-        resolvePreferredExecutionMode: () => "inline",
-        dispatch: async () => ({
-          executionMode: "inline",
-          queueMessageId: null,
-          statusMessage: "Report run started inline for local development.",
-        }),
-      },
     });
 
     const created = await service.createReport("example.com");
@@ -499,17 +592,10 @@ describe("createReportService", () => {
 
   it("treats ready_with_limited_coverage as a reusable terminal report", async () => {
     const { repository, storedReports } = createRepositoryStub();
-    const service = createReportService({
+    const { service } = createServiceHarness({
       repository,
+      storedReports,
       shareIdGenerator: () => "atlas12345",
-      dispatcher: {
-        resolvePreferredExecutionMode: () => "inline",
-        dispatch: async () => ({
-          executionMode: "inline",
-          queueMessageId: null,
-          statusMessage: "Report run started inline for local development.",
-        }),
-      },
     });
 
     const created = await service.createReport("example.com");
@@ -573,9 +659,9 @@ describe("createReportService", () => {
   it("reuses a stale cached brief immediately and keeps refresh work off the first render", async () => {
     const { repository, storedReports } = createRepositoryStub();
     const generatedIds = ["atlas12345", "atlasrefresh1"];
-    const dispatchCalls: number[] = [];
-    const service = createReportService({
+    const { service, generation } = createServiceHarness({
       repository,
+      storedReports,
       shareIdGenerator: () => {
         const next = generatedIds.shift();
 
@@ -584,18 +670,6 @@ describe("createReportService", () => {
         }
 
         return next;
-      },
-      dispatcher: {
-        resolvePreferredExecutionMode: () => "inline",
-        dispatch: async ({ runId }) => {
-          dispatchCalls.push(runId);
-
-          return {
-            executionMode: "inline" as const,
-            queueMessageId: null,
-            statusMessage: "Report run started inline for local development.",
-          };
-        },
       },
     });
 
@@ -626,12 +700,12 @@ describe("createReportService", () => {
     expect(reused.reuseReason).toBe("cached_completed");
     expect(document?.currentRun?.accountPlan?.topUseCases).toHaveLength(3);
     expect(storedReports.size).toBe(2);
-    expect(dispatchCalls).toHaveLength(2);
+    expect(generation.startCalls).toHaveLength(2);
 
     const refreshEntry = [...storedReports.values()].find((entry) => entry.report.shareId !== created.shareId);
 
-    expect(refreshEntry?.report.status).toBe("queued");
-    expect(refreshEntry?.currentRun?.status).toBe("queued");
+    expect(refreshEntry?.report.status).toBe("running");
+    expect(refreshEntry?.currentRun?.status).toBe("synthesizing");
 
     const reusedAgain = await service.createReport("https://example.com/pricing", {
       requesterHash: "cache-hit-hash-2",
@@ -639,22 +713,15 @@ describe("createReportService", () => {
 
     expect(reusedAgain.shareId).toBe(created.shareId);
     expect(reusedAgain.reuseReason).toBe("cached_completed");
-    expect(dispatchCalls).toHaveLength(2);
+    expect(generation.startCalls).toHaveLength(2);
   });
 
   it("rate limits repeated new report creation attempts for the same requester", async () => {
-    const { repository, requestRecords } = createRepositoryStub();
-    const service = createReportService({
+    const { repository, requestRecords, storedReports } = createRepositoryStub();
+    const { service } = createServiceHarness({
       repository,
+      storedReports,
       shareIdGenerator: () => "atlas12345",
-      dispatcher: {
-        resolvePreferredExecutionMode: () => "inline",
-        dispatch: async () => ({
-          executionMode: "inline",
-          queueMessageId: null,
-          statusMessage: "Report run started inline for local development.",
-        }),
-      },
     });
 
     for (let index = 0; index < 8; index += 1) {
@@ -675,8 +742,8 @@ describe("createReportService", () => {
   });
 
   it("returns a status shell with polling metadata", async () => {
-    const { repository } = createRepositoryStub();
-    const service = createReportService({ repository });
+    const { repository, storedReports } = createRepositoryStub();
+    const { service } = createServiceHarness({ repository, storedReports });
 
     const created = await service.createReport("example.com");
     const status = await service.getReportStatusShell(created.shareId);
@@ -687,9 +754,200 @@ describe("createReportService", () => {
     expect(status?.isTerminal).toBe(false);
   });
 
+  it("syncs a background deep-research run to a terminal stored report", async () => {
+    const { repository, storedReports } = createRepositoryStub();
+    const syncByShareId = new Map<string, (shell: StoredReportShell) => void>();
+    const { service } = createServiceHarness({
+      repository,
+      storedReports,
+      syncByShareId,
+    });
+    const created = await service.createReport("example.com");
+
+    syncByShareId.set(created.shareId, (shell) => {
+      if (!shell.currentRun) {
+        throw new Error("Expected stored run");
+      }
+
+      shell.report.status = "ready";
+      shell.report.completedAt = new Date("2026-04-07T12:03:00.000Z");
+      shell.currentRun.status = "completed";
+      shell.currentRun.completedAt = new Date("2026-04-07T12:03:00.000Z");
+      shell.currentRun.statusMessage = "The deep research background job completed with a source-backed account plan.";
+      shell.currentRun.openaiResponseStatus = "completed";
+      shell.currentRun.openaiOutputText = "{\"ok\":true}";
+      shell.currentRun.canonicalReport = {
+        company: {
+          resolved_name: "Example",
+          canonical_domain: "example.com",
+          relationship_to_url: null,
+          archetype: "B2B software vendor",
+          company_brief: "Example sells enterprise software.",
+          business_model: "Enterprise software",
+          customer_type: "Enterprise teams",
+          industry: "Software",
+          sector: "Technology",
+          offerings: "Workflow software",
+          headquarters: "New York, NY",
+          public_company: false,
+          citations: [{ source_id: 1, support: "Homepage summary." }],
+        },
+        report_metadata: {
+          schema_name: "account_atlas_canonical_report",
+          schema_version: 1,
+          report_type: "seller_facing_account_plan",
+          generated_at: "2026-04-07T12:03:00.000Z",
+          company_url: "https://example.com/",
+          normalized_company_url: "https://example.com/",
+          canonical_domain: "example.com",
+          report_mode: "full_report",
+        },
+        executive_summary: {
+          summary: "Example has clear enterprise workflow positioning.",
+          why_now: "Public signals point to workflow scale pressure.",
+          strategic_takeaway: "Lead with seller workflow acceleration.",
+          citations: [{ source_id: 1, support: "Homepage summary." }],
+        },
+        fact_base: [],
+        ai_maturity_signals: {
+          maturity_level: "moderate",
+          maturity_summary: "Example has product and trust signals.",
+          notable_signals: [],
+          regulatory_sensitivity: {
+            level: "medium",
+            rationale: "Enterprise workflow systems carry trust expectations.",
+            citations: [{ source_id: 1, support: "Homepage summary." }],
+          },
+          citations: [{ source_id: 1, support: "Homepage summary." }],
+        },
+        recommended_motion: {
+          recommended_motion: "workspace",
+          rationale: "Knowledge-heavy workflows dominate the first pilot.",
+          deployment_shape: null,
+          citations: [{ source_id: 1, support: "Homepage summary." }],
+        },
+        top_opportunities: [],
+        buying_map: {
+          stakeholder_hypotheses: [],
+          likely_objections: [],
+          discovery_questions: [],
+        },
+        pilot_plan: null,
+        expansion_scenarios: {
+          low: null,
+          base: null,
+          high: null,
+        },
+        evidence_coverage: {
+          overall_confidence: {
+            confidence_band: "medium",
+            confidence_score: 68,
+            rationale: "Enough public evidence is available.",
+          },
+          overall_coverage: {
+            coverage_level: "usable",
+            coverage_score: 70,
+            rationale: "Coverage is sufficient for a directional plan.",
+          },
+          research_completeness_score: 70,
+          thin_evidence: false,
+          evidence_gaps: [],
+          section_coverage: [
+            {
+              section: "company-brief",
+              coverage: { coverage_level: "usable", coverage_score: 70, rationale: "Covered." },
+              confidence: { confidence_band: "medium", confidence_score: 70, rationale: "Covered." },
+              citations: [{ source_id: 1, support: "Homepage summary." }],
+            },
+            {
+              section: "fact-base",
+              coverage: { coverage_level: "usable", coverage_score: 70, rationale: "Covered." },
+              confidence: { confidence_band: "medium", confidence_score: 70, rationale: "Covered." },
+              citations: [{ source_id: 1, support: "Homepage summary." }],
+            },
+            {
+              section: "ai-maturity-signals",
+              coverage: { coverage_level: "usable", coverage_score: 70, rationale: "Covered." },
+              confidence: { confidence_band: "medium", confidence_score: 70, rationale: "Covered." },
+              citations: [{ source_id: 1, support: "Homepage summary." }],
+            },
+            {
+              section: "prioritized-use-cases",
+              coverage: { coverage_level: "thin", coverage_score: 50, rationale: "Thin." },
+              confidence: { confidence_band: "low", confidence_score: 50, rationale: "Thin." },
+              citations: [{ source_id: 1, support: "Homepage summary." }],
+            },
+            {
+              section: "recommended-motion",
+              coverage: { coverage_level: "usable", coverage_score: 70, rationale: "Covered." },
+              confidence: { confidence_band: "medium", confidence_score: 70, rationale: "Covered." },
+              citations: [{ source_id: 1, support: "Homepage summary." }],
+            },
+            {
+              section: "stakeholder-hypotheses",
+              coverage: { coverage_level: "thin", coverage_score: 50, rationale: "Thin." },
+              confidence: { confidence_band: "low", confidence_score: 50, rationale: "Thin." },
+              citations: [{ source_id: 1, support: "Homepage summary." }],
+            },
+            {
+              section: "objections",
+              coverage: { coverage_level: "thin", coverage_score: 50, rationale: "Thin." },
+              confidence: { confidence_band: "low", confidence_score: 50, rationale: "Thin." },
+              citations: [{ source_id: 1, support: "Homepage summary." }],
+            },
+            {
+              section: "discovery-questions",
+              coverage: { coverage_level: "thin", coverage_score: 50, rationale: "Thin." },
+              confidence: { confidence_band: "low", confidence_score: 50, rationale: "Thin." },
+              citations: [{ source_id: 1, support: "Homepage summary." }],
+            },
+            {
+              section: "pilot-plan",
+              coverage: { coverage_level: "thin", coverage_score: 50, rationale: "Thin." },
+              confidence: { confidence_band: "low", confidence_score: 50, rationale: "Thin." },
+              citations: [{ source_id: 1, support: "Homepage summary." }],
+            },
+            {
+              section: "expansion-scenarios",
+              coverage: { coverage_level: "thin", coverage_score: 50, rationale: "Thin." },
+              confidence: { confidence_band: "low", confidence_score: 50, rationale: "Thin." },
+              citations: [{ source_id: 1, support: "Homepage summary." }],
+            },
+          ],
+        },
+        confidence_notes: [],
+        sources: [
+          {
+            source_id: 1,
+            title: "Example",
+            url: "https://example.com/",
+            source_type: "company_homepage",
+            source_tier: "primary",
+            publisher: null,
+            published_at: null,
+            retrieved_at: "2026-04-07T12:02:00.000Z",
+            summary: "Example homepage.",
+          },
+        ],
+        grounded_fallback: null,
+      };
+      shell.currentRun.researchSummary = createMinimalResearchSummary();
+      shell.currentRun.accountPlan = createMinimalAccountPlan();
+      shell.currentRun.accountPlan.topUseCases = shell.currentRun.accountPlan.candidateUseCases.slice(0, 3);
+    });
+
+    const status = await service.getReportStatusShell(created.shareId);
+    const stored = storedReports.get(created.shareId);
+
+    expect(status?.isTerminal).toBe(true);
+    expect(status?.report.status).toBe("ready");
+    expect(stored?.currentRun?.openaiResponseStatus).toBe("completed");
+    expect(stored?.currentRun?.canonicalReport?.report_metadata.schema_name).toBe("account_atlas_canonical_report");
+  });
+
   it("treats a ready core brief as terminal even while optional work is still running", async () => {
     const { repository, storedReports } = createRepositoryStub();
-    const service = createReportService({ repository });
+    const { service } = createServiceHarness({ repository, storedReports });
     const created = await service.createReport("example.com");
     const stored = storedReports.get(created.shareId);
 
@@ -748,7 +1006,7 @@ describe("createReportService", () => {
 
   it("uses focused coverage copy when limited optional coverage follows a high evidence score", async () => {
     const { repository, storedReports } = createRepositoryStub();
-    const service = createReportService({ repository });
+    const { service } = createServiceHarness({ repository, storedReports });
     const created = await service.createReport("example.com");
     const stored = storedReports.get(created.shareId);
 
@@ -778,7 +1036,7 @@ describe("createReportService", () => {
 
   it("does not treat an empty completed shell as a successful report", async () => {
     const { repository, storedReports } = createRepositoryStub();
-    const service = createReportService({ repository });
+    const { service } = createServiceHarness({ repository, storedReports });
     const created = await service.createReport("example.com");
     const stored = storedReports.get(created.shareId);
 
@@ -804,8 +1062,8 @@ describe("createReportService", () => {
   });
 
   it("returns a not-found placeholder page model", async () => {
-    const { repository } = createRepositoryStub();
-    const service = createReportService({ repository });
+    const { repository, storedReports } = createRepositoryStub();
+    const { service } = createServiceHarness({ repository, storedReports });
 
     const result = await service.getReportPageModel("missing-report");
 
@@ -815,7 +1073,7 @@ describe("createReportService", () => {
 
   it("returns a full report document with persisted facts, sources, and artifacts", async () => {
     const { repository, storedReports, storedSources, storedFacts, storedArtifacts } = createRepositoryStub();
-    const service = createReportService({ repository });
+    const { service } = createServiceHarness({ repository, storedReports });
     const created = await service.createReport("example.com");
     const stored = storedReports.get(created.shareId);
 
@@ -942,8 +1200,8 @@ describe("createReportService", () => {
   });
 
   it("does not advertise unsupported download routes for non-export artifacts", async () => {
-    const { repository, storedArtifacts } = createRepositoryStub();
-    const service = createReportService({ repository });
+    const { repository, storedArtifacts, storedReports } = createRepositoryStub();
+    const { service } = createServiceHarness({ repository, storedReports });
     const created = await service.createReport("example.com");
 
     storedArtifacts.set(created.runId, [
@@ -972,8 +1230,8 @@ describe("createReportService", () => {
   });
 
   it("returns inline artifact downloads when Blob storage is unavailable", async () => {
-    const { repository, storedArtifacts } = createRepositoryStub();
-    const service = createReportService({ repository });
+    const { repository, storedArtifacts, storedReports } = createRepositoryStub();
+    const { service } = createServiceHarness({ repository, storedReports });
     const created = await service.createReport("example.com");
 
     storedArtifacts.set(created.runId, [
@@ -1010,10 +1268,11 @@ describe("createReportService", () => {
   it("materializes a missing Markdown artifact when loading a terminal report document", async () => {
     const { repository, storedReports, storedArtifacts } = createRepositoryStub();
     let markdownGenerations = 0;
-    const service = createReportService({
+    const { service } = createServiceHarness({
       repository,
+      storedReports,
       exportService: {
-        async generateMarkdownArtifact(context) {
+        async generateMarkdownArtifact(context: { report: { id: number }; run: { id: number } }) {
           markdownGenerations += 1;
           const nextArtifacts = storedArtifacts.get(context.run.id) ?? [];
           nextArtifacts.push({
@@ -1069,13 +1328,14 @@ describe("createReportService", () => {
   it("generates a missing PDF artifact on demand for a terminal report", async () => {
     const { repository, storedReports, storedArtifacts } = createRepositoryStub();
     let pdfGenerations = 0;
-    const service = createReportService({
+    const { service } = createServiceHarness({
       repository,
+      storedReports,
       exportService: {
         async generateMarkdownArtifact() {
           throw new Error("Not needed in this test");
         },
-        async generatePdfArtifact(context) {
+        async generatePdfArtifact(context: { report: { id: number }; run: { id: number } }) {
           pdfGenerations += 1;
           const nextArtifacts = storedArtifacts.get(context.run.id) ?? [];
           nextArtifacts.push({

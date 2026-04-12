@@ -1,5 +1,11 @@
 import "server-only";
 
+import {
+  canonicalCitationSourceIds,
+  getCanonicalReadySectionKeys,
+  getCanonicalSectionCoverage,
+  isCanonicalGroundedFallbackReport,
+} from "@/lib/canonical-report";
 import { createPendingReportSections } from "@/lib/report-sections";
 import { evaluatePublishableReport, getReadyReportSectionKeys } from "@/lib/report-completion";
 import type { FinalAccountPlan } from "@/lib/types/account-plan";
@@ -23,10 +29,13 @@ import type { ResearchSummary } from "@/lib/types/research";
 import { createShareId } from "@/lib/id";
 import { extractCanonicalDomain, normalizeCompanyUrl } from "@/lib/url";
 import { isDatabaseConfigError } from "@/server/db/client";
+import {
+  createDeepResearchReportGenerationService,
+  type DeepResearchReportGenerationService,
+} from "@/server/deep-research/report-generation-service";
 import { serverEnv } from "@/env/server";
 import { createReportExportService } from "@/server/exports/export-service";
 import { logServerEvent } from "@/server/observability/logger";
-import { createPipelineDispatcher } from "@/server/pipeline/pipeline-dispatcher";
 import { coercePipelineStepKey, normalizePipelineState, serializePipelineProgress } from "@/server/pipeline/pipeline-steps";
 import { ReportCreatePolicyError } from "@/server/reporting/report-create-policy";
 import {
@@ -48,7 +57,7 @@ const DB_UNAVAILABLE_MESSAGE =
 type ReportServiceDependencies = {
   repository?: ReportRepository;
   shareIdGenerator?: () => string;
-  dispatcher?: ReturnType<typeof createPipelineDispatcher>;
+  reportGenerationService?: DeepResearchReportGenerationService;
   exportService?: ReturnType<typeof createReportExportService>;
 };
 
@@ -83,23 +92,157 @@ function serializeReport(report: StoredReportShell["report"] | CreatedQueuedRepo
   };
 }
 
+function buildRunDisplayStatus(input: {
+  run: StoredReportShell["currentRun"] | CreatedQueuedReportRecord["currentRun"] | null;
+  reportStatus: StoredReportShell["report"]["status"] | CreatedQueuedReportRecord["report"]["status"];
+}): ReportRunSummary["displayStatus"] {
+  const { run, reportStatus } = input;
+
+  if (reportStatus === "failed" || run?.status === "failed" || run?.status === "cancelled") {
+    return "failed";
+  }
+
+  if (
+    isCanonicalGroundedFallbackReport(run?.canonicalReport) &&
+    (reportStatus === "ready" || reportStatus === "ready_with_limited_coverage" || run?.status === "completed")
+  ) {
+    return "completed_with_grounded_fallback";
+  }
+
+  if (reportStatus === "ready" || reportStatus === "ready_with_limited_coverage" || run?.status === "completed") {
+    return "completed";
+  }
+
+  if (reportStatus === "queued" || run?.status === "queued" || !run) {
+    return "queued";
+  }
+
+  return "in_progress";
+}
+
+function isDeepResearchRun(
+  run: NonNullable<StoredReportShell["currentRun"]> | ReportRunSummary | null,
+) {
+  if (!run) {
+    return false;
+  }
+
+  if (run.canonicalReport) {
+    return true;
+  }
+
+  const hasLegacyMaterialization = Boolean(run.researchSummary || run.accountPlan);
+
+  if (hasLegacyMaterialization) {
+    return false;
+  }
+
+  return Boolean(run.openaiResponseId || run.openaiResponseStatus);
+}
+
+function buildDeepResearchProgress(
+  run: NonNullable<StoredReportShell["currentRun"]>,
+  displayStatus: ReportRunSummary["displayStatus"],
+): ReportRunSummary["progress"] {
+  const startedAt = run.startedAt?.toISOString() ?? null;
+  const updatedAt = run.updatedAt.toISOString();
+  const completedAt = run.completedAt?.toISOString() ?? null;
+  const failedState = run.status === "failed" || run.status === "cancelled" || displayStatus === "failed";
+  const completedState =
+    run.status === "completed" ||
+    displayStatus === "completed" ||
+    displayStatus === "completed_with_grounded_fallback";
+  const activeState = !failedState && !completedState && displayStatus === "in_progress";
+
+  const steps: ReportRunSummary["progress"]["steps"] = [
+    {
+      key: "normalize_target",
+      label: "Preflight",
+      progressPercent: 12,
+      attemptCount: 1,
+      startedAt,
+      completedAt: startedAt,
+      lastAttemptedAt: startedAt,
+      lastDeliveryCount: 1,
+      errorCode: null,
+      errorMessage: null,
+      fallbackApplied: false,
+      retryExhausted: false,
+      status: "completed" as const,
+    },
+    {
+      key: "generate_account_plan",
+      label: "Deep research",
+      progressPercent: 68,
+      attemptCount: run.startedAt ? 1 : 0,
+      startedAt,
+      completedAt: completedState ? completedAt ?? updatedAt : null,
+      lastAttemptedAt: updatedAt,
+      lastDeliveryCount: 1,
+      errorCode: failedState ? run.errorCode : null,
+      errorMessage: failedState ? run.errorMessage : null,
+      fallbackApplied: false,
+      retryExhausted: failedState,
+      status: failedState ? "failed" : completedState ? "completed" : activeState ? "running" : "pending",
+    },
+    {
+      key: "finalize_report",
+      label: "Publish report",
+      progressPercent: 100,
+      attemptCount: completedState || failedState ? 1 : 0,
+      startedAt: completedState || failedState ? startedAt : null,
+      completedAt: completedState ? completedAt ?? updatedAt : null,
+      lastAttemptedAt: completedState || failedState ? updatedAt : null,
+      lastDeliveryCount: completedState || failedState ? 1 : null,
+      errorCode: null,
+      errorMessage: null,
+      fallbackApplied: displayStatus === "completed_with_grounded_fallback",
+      retryExhausted: false,
+      status: completedState ? "completed" : "pending",
+    },
+  ];
+  const currentStepKey = completedState || failedState ? null : "generate_account_plan";
+
+  return {
+    totalSteps: steps.length,
+    completedSteps: steps.filter((step) => step.status === "completed").length,
+    currentStepKey,
+    currentStepLabel: currentStepKey ? steps.find((step) => step.key === currentStepKey)?.label ?? null : null,
+    steps,
+  };
+}
+
 function serializeRun(
-  run: StoredReportShell["currentRun"] | CreatedQueuedReportRecord["currentRun"],
+  input: {
+    run: StoredReportShell["currentRun"] | CreatedQueuedReportRecord["currentRun"];
+    reportStatus: StoredReportShell["report"]["status"] | CreatedQueuedReportRecord["report"]["status"];
+  },
 ): ReportRunSummary | null {
+  const { run, reportStatus } = input;
+
   if (!run) {
     return null;
   }
 
-  const progress = serializePipelineProgress(normalizePipelineState(run.pipelineState));
+  const displayStatus = buildRunDisplayStatus({
+    run,
+    reportStatus,
+  });
+  const progress = isDeepResearchRun(run)
+    ? buildDeepResearchProgress(run, displayStatus)
+    : serializePipelineProgress(normalizePipelineState(run.pipelineState));
 
   return {
     id: run.id,
     status: run.status,
+    displayStatus,
     progressPercent: run.progressPercent,
-    stepKey: coercePipelineStepKey(run.stepKey),
+    stepKey: progress.currentStepKey ?? (isDeepResearchRun(run) ? null : coercePipelineStepKey(run.stepKey)),
     stepLabel: progress.currentStepLabel,
     executionMode: run.executionMode,
     statusMessage: run.statusMessage,
+    openaiResponseId: run.openaiResponseId ?? null,
+    openaiResponseStatus: run.openaiResponseStatus ?? null,
     errorCode: run.errorCode,
     errorMessage: run.errorMessage,
     createdAt: run.createdAt.toISOString(),
@@ -108,6 +251,7 @@ function serializeRun(
     completedAt: run.completedAt?.toISOString() ?? null,
     failedAt: run.failedAt?.toISOString() ?? null,
     progress,
+    canonicalReport: run.canonicalReport ?? null,
     researchSummary: (run.researchSummary ?? null) as ResearchSummary | null,
     accountPlan: (run.accountPlan ?? null) as FinalAccountPlan | null,
   };
@@ -129,9 +273,14 @@ function serializeSource(source: Awaited<ReturnType<ReportRepository["listSource
     typeof source.storagePointers.summary === "string"
       ? source.storagePointers.summary
       : source.textContent ?? source.markdownContent ?? null;
+  const canonicalSourceId =
+    typeof source.storagePointers.canonicalSourceId === "number" && Number.isInteger(source.storagePointers.canonicalSourceId)
+      ? source.storagePointers.canonicalSourceId
+      : null;
 
   return {
     id: source.id,
+    canonicalSourceId,
     title: source.title ?? source.canonicalUrl,
     url: source.canonicalUrl,
     canonicalDomain: source.canonicalDomain,
@@ -286,6 +435,49 @@ function buildShellMessage(shell: StoredReportShell) {
     return "The report exists, but no run record is attached yet.";
   }
 
+  if (shell.currentRun.canonicalReport) {
+    if (shell.currentRun.status === "failed") {
+      return shell.currentRun.statusMessage;
+    }
+
+    if (shell.currentRun.status === "queued") {
+      return "The deep research brief is queued and waiting for OpenAI to start the background job.";
+    }
+
+    if (shell.report.status === "running" || shell.currentRun.status === "synthesizing") {
+      return shell.currentRun.statusMessage || "The deep research brief is running in the background.";
+    }
+
+    if (isCanonicalGroundedFallbackReport(shell.currentRun.canonicalReport)) {
+      return "This report completed with a grounded company brief. Account Atlas kept the company snapshot and citations, while holding back stronger opportunity claims until evidence improves.";
+    }
+
+    if (shell.report.status === "ready_with_limited_coverage") {
+      return buildLimitedCoverageShellMessage({
+        researchCompletenessScore: shell.currentRun.canonicalReport.evidence_coverage.research_completeness_score,
+        runCompleted: true,
+      });
+    }
+
+    if (shell.currentRun.status === "completed") {
+      return "This report completed with a source-backed seller-facing brief generated from one deep research run.";
+    }
+  }
+
+  if (isDeepResearchRun(shell.currentRun)) {
+    if (shell.currentRun.status === "queued") {
+      return "The deep research brief is queued and waiting for the background job to start.";
+    }
+
+    if (shell.currentRun.status === "synthesizing" || shell.report.status === "running") {
+      return shell.currentRun.statusMessage || "The deep research brief is running in the background.";
+    }
+
+    if (shell.currentRun.status === "failed") {
+      return shell.currentRun.statusMessage;
+    }
+  }
+
   const contract = evaluatePublishableReport({
     researchSummary: shell.currentRun.researchSummary,
     accountPlan: shell.currentRun.accountPlan,
@@ -354,13 +546,13 @@ function buildLimitedCoverageShellMessage(input: {
 
   if (runCompleted) {
     return hasHighEvidenceCoverage(researchCompletenessScore)
-      ? "This report run completed with focused source coverage. The core brief is usable, with lighter coverage in some optional areas or exports."
-      : "This report run completed with a usable seller-facing brief, with lighter coverage in some optional areas or exports.";
+      ? "This report run completed with focused source coverage. The core brief is usable, with lighter coverage in some optional areas or export files."
+      : "This report run completed with a usable seller-facing brief, with lighter coverage in some optional areas or export files.";
   }
 
   return hasHighEvidenceCoverage(researchCompletenessScore)
-    ? "A usable core brief is ready with focused source coverage. Account Atlas may still finish optional enrichment or exports in the background."
-    : "A usable core brief is ready. Account Atlas may still finish optional enrichment or exports in the background, and some optional areas may fill in on refresh.";
+    ? "A usable core brief is ready with focused source coverage. Export files may still finish in the background."
+    : "A usable core brief is ready. Export files may still finish in the background, and some optional areas may remain lighter coverage.";
 }
 
 function buildResultMeta(input: {
@@ -368,6 +560,90 @@ function buildResultMeta(input: {
   reportStatus: ReportSummary["status"];
 }) {
   const { currentRun, reportStatus } = input;
+
+  if (currentRun?.canonicalReport) {
+    if (reportStatus === "failed" || currentRun.status === "failed") {
+      return {
+        state: currentRun.canonicalReport ? "partial" : "failed",
+        label: "Failed",
+        summary: "The deep research run failed before a stable shareable brief could be finalized.",
+        hasThinEvidence: hasThinEvidence(currentRun),
+        hasPartialData: false,
+      } satisfies ReportDocument["result"];
+    }
+
+    if (isCanonicalGroundedFallbackReport(currentRun.canonicalReport)) {
+      return {
+        state: "ready",
+        label: "Grounded brief",
+        summary:
+          "The report is ready with a grounded company brief. Opportunity recommendations were held back until company-specific evidence improves.",
+        hasThinEvidence: hasThinEvidence(currentRun),
+        hasPartialData: reportStatus === "ready_with_limited_coverage",
+      } satisfies ReportDocument["result"];
+    }
+
+    if (reportStatus === "ready_with_limited_coverage") {
+      const researchCompletenessScore = currentRun.canonicalReport.evidence_coverage.research_completeness_score;
+
+      return {
+        state: "ready",
+        label: buildLimitedCoverageResultLabel(researchCompletenessScore),
+        summary: buildLimitedCoverageResultSummary(researchCompletenessScore),
+        hasThinEvidence: hasThinEvidence(currentRun),
+        hasPartialData: true,
+      } satisfies ReportDocument["result"];
+    }
+
+    if (reportStatus === "ready" || currentRun.status === "completed") {
+      return {
+        state: "ready",
+        label: "Complete",
+        summary: "The report includes a coherent seller-facing brief rendered from the saved report.",
+        hasThinEvidence: hasThinEvidence(currentRun),
+        hasPartialData: false,
+      } satisfies ReportDocument["result"];
+    }
+
+    return {
+      state: "pending",
+      label: currentRun.displayStatus === "queued" ? "Queued" : "In progress",
+      summary: "The deep research brief is still gathering public evidence and preparing the saved brief.",
+      hasThinEvidence: false,
+      hasPartialData: false,
+    } satisfies ReportDocument["result"];
+  }
+
+  if (isDeepResearchRun(currentRun)) {
+    if (currentRun?.status === "completed") {
+      return {
+        state: "failed",
+        label: "Incomplete",
+        summary: "The deep research run completed without enough persisted report content to render a reliable brief.",
+        hasThinEvidence: false,
+        hasPartialData: false,
+      } satisfies ReportDocument["result"];
+    }
+
+    if (currentRun?.status === "failed") {
+      return {
+        state: "failed",
+        label: "Failed",
+        summary: "The deep research run failed before a stable shareable brief could be finalized.",
+        hasThinEvidence: false,
+        hasPartialData: false,
+      } satisfies ReportDocument["result"];
+    }
+
+    return {
+      state: "pending",
+      label: currentRun?.displayStatus === "queued" ? "Queued" : "In progress",
+      summary: "The deep research brief is still gathering public evidence and preparing the saved brief.",
+      hasThinEvidence: false,
+      hasPartialData: false,
+    } satisfies ReportDocument["result"];
+  }
+
   const contract = evaluatePublishableReport({
     researchSummary: currentRun?.researchSummary,
     accountPlan: currentRun?.accountPlan,
@@ -376,7 +652,7 @@ function buildResultMeta(input: {
   const partialDataAvailable = Boolean(currentRun?.researchSummary || currentRun?.accountPlan);
   let state: ReportContentState = "pending";
   let label = "In progress";
-  let summary = "The report pipeline is still collecting public evidence for this company.";
+  let summary = "The report is still gathering public evidence for this company.";
 
   if (reportStatus === "ready_with_limited_coverage" && contract.isSatisfied) {
     state = "ready";
@@ -424,6 +700,43 @@ function buildReportTitle(report: ReportSummary) {
 }
 
 function buildReportSummary(shell: ReportShell) {
+  if (shell.currentRun?.canonicalReport) {
+    if (shell.currentRun.displayStatus === "completed_with_grounded_fallback") {
+      return `This report completed with a grounded company brief for ${
+        shell.currentRun.canonicalReport.company.resolved_name
+      }. Full opportunity recommendations were held back until stronger company-specific evidence is available.`;
+    }
+
+    if (shell.report.status === "ready_with_limited_coverage") {
+      return buildLimitedCoverageShellMessage({
+        researchCompletenessScore: shell.currentRun.canonicalReport.evidence_coverage.research_completeness_score,
+        runCompleted: true,
+      });
+    }
+
+    if (shell.currentRun.displayStatus === "completed") {
+      return `This report completed with a saved brief for ${
+        shell.currentRun.canonicalReport.company.resolved_name
+      }, ${shell.currentRun.canonicalReport.top_opportunities.length} evidence-backed opportunity ${
+        shell.currentRun.canonicalReport.top_opportunities.length === 1 ? "card" : "cards"
+      }, and an explicit ${shell.currentRun.canonicalReport.recommended_motion.recommended_motion} motion recommendation.`;
+    }
+
+    if (shell.currentRun.displayStatus === "failed") {
+      return "This report record exists, but the deep research run failed before a stable shareable brief was finalized.";
+    }
+
+    return "This shareable report is being prepared from one deep research background job.";
+  }
+
+  if (isDeepResearchRun(shell.currentRun)) {
+    if (shell.currentRun?.status === "failed") {
+      return "This report record exists, but the deep research run failed before evidence-backed sections were finalized.";
+    }
+
+    return "This shareable report exists server-side and is being prepared from one deep research background job.";
+  }
+
   const contract = evaluatePublishableReport({
     researchSummary: shell.currentRun?.researchSummary,
     accountPlan: shell.currentRun?.accountPlan,
@@ -435,7 +748,7 @@ function buildReportSummary(shell: ReportShell) {
           researchCompletenessScore: shell.currentRun?.researchSummary?.researchCompletenessScore ?? null,
           runCompleted: false,
         })
-      : "This report already includes a usable seller-facing brief. Optional enrichment or exports may still finish in the background.";
+      : "This report already includes a usable seller-facing brief. Export files may still finish in the background.";
   }
 
   if (shell.currentRun?.status === "completed" && shell.report.status === "ready_with_limited_coverage") {
@@ -446,7 +759,7 @@ function buildReportSummary(shell: ReportShell) {
           researchCompletenessScore: shell.currentRun.researchSummary?.researchCompletenessScore ?? null,
           runCompleted: true,
         })
-      : "This report run completed with limited coverage. Review the available sections, warnings, and build log before using it as a full account brief.";
+      : "This report run completed with limited coverage. Review the available sections and notes before using it as a full account brief.";
   }
 
   if (
@@ -458,7 +771,7 @@ function buildReportSummary(shell: ReportShell) {
   }
 
   if (shell.currentRun?.status === "completed" && contract.isSatisfied && shell.currentRun.accountPlan) {
-    return `This report run completed with a source-backed account plan, ${shell.currentRun.accountPlan.candidateUseCases.length} scored use cases, and an explicit ${shell.currentRun.accountPlan.overallAccountMotion.recommendedMotion} motion recommendation.`;
+    return `This report run completed with a source-backed brief, ${shell.currentRun.accountPlan.candidateUseCases.length} scored opportunities, and an explicit ${shell.currentRun.accountPlan.overallAccountMotion.recommendedMotion} motion recommendation.`;
   }
 
   if (shell.currentRun?.status === "failed") {
@@ -475,15 +788,17 @@ function buildReportSummary(shell: ReportShell) {
     return "This report run completed, but no persisted research summary was available for the share view.";
   }
 
-  return "This shareable report exists server-side and is being processed through the report pipeline. No AI findings or customer data are being invented here.";
+  return "This shareable report exists server-side and is still being prepared from public evidence. No findings are shown until usable evidence is available.";
 }
 
 function buildReportSections(currentRun: ReportRunSummary | null): ReportSectionShell[] {
   const sections = createPendingReportSections();
-  const readySectionKeys = getReadyReportSectionKeys({
-    researchSummary: currentRun?.researchSummary,
-    accountPlan: currentRun?.accountPlan,
-  });
+  const readySectionKeys = currentRun?.canonicalReport
+    ? getCanonicalReadySectionKeys(currentRun.canonicalReport)
+    : getReadyReportSectionKeys({
+        researchSummary: currentRun?.researchSummary,
+        accountPlan: currentRun?.accountPlan,
+      });
 
   for (const section of sections) {
     if (readySectionKeys.has(section.key)) {
@@ -495,6 +810,29 @@ function buildReportSections(currentRun: ReportRunSummary | null): ReportSection
 }
 
 function buildSectionAssessments(sections: ReportSectionShell[], currentRun: ReportRunSummary | null) {
+  if (currentRun?.canonicalReport) {
+    return sections.map((section) => {
+      const coverage = getCanonicalSectionCoverage(currentRun.canonicalReport, section.key);
+
+      return {
+        ...section,
+        confidence: section.status === "ready" ? coverage?.confidence.confidence_score ?? null : null,
+        confidenceRationale:
+          section.status === "ready"
+            ? coverage?.confidence.rationale ?? coverage?.coverage.rationale ?? null
+            : null,
+        completenessLabel:
+          section.status === "ready"
+            ? coverage?.coverage.coverage_level === "strong"
+              ? "Strong evidence"
+              : coverage?.coverage.coverage_level === "usable"
+                ? "Usable but incomplete"
+                : "Thin evidence"
+            : "Waiting on evidence",
+      };
+    });
+  }
+
   const confidenceBySection = new Map(
     currentRun?.researchSummary?.confidenceBySection.map((entry) => [entry.section, entry]) ?? [],
   );
@@ -527,6 +865,10 @@ function buildCompletenessSummary(sections: ReportSectionShell[], currentRun: Re
     return `${readySections} of ${sections.length} major sections populated`;
   }
 
+  if (currentRun?.canonicalReport) {
+    return `${currentRun.canonicalReport.evidence_coverage.research_completeness_score}/100 evidence coverage`;
+  }
+
   if (currentRun?.researchSummary) {
     return `${currentRun.researchSummary.researchCompletenessScore}/100 research completeness`;
   }
@@ -535,6 +877,15 @@ function buildCompletenessSummary(sections: ReportSectionShell[], currentRun: Re
 }
 
 function buildConfidenceSummary(currentRun: ReportRunSummary | null) {
+  if (currentRun?.canonicalReport) {
+    const overallConfidence = currentRun.canonicalReport.evidence_coverage.overall_confidence;
+    const firstNote = currentRun.canonicalReport.confidence_notes[0]?.note;
+
+    return firstNote
+      ? `Overall confidence: ${overallConfidence.confidence_band} (${overallConfidence.confidence_score}/100). ${firstNote}`
+      : `Overall confidence: ${overallConfidence.confidence_band} (${overallConfidence.confidence_score}/100). ${overallConfidence.rationale}`;
+  }
+
   if (currentRun?.accountPlan && currentRun.researchSummary) {
     const evidenceConfidenceScores = currentRun.accountPlan.topUseCases.map(
       (useCase) => useCase.scorecard.evidenceConfidence,
@@ -552,13 +903,65 @@ function buildConfidenceSummary(currentRun: ReportRunSummary | null) {
   }
 
   if (currentRun?.status === "completed") {
-    return "The orchestration completed, but confidence remains thin because evidence coverage was incomplete.";
+    return isDeepResearchRun(currentRun)
+      ? "The deep research run completed, but confidence remains thin because evidence coverage was incomplete."
+      : "The orchestration completed, but confidence remains thin because evidence coverage was incomplete.";
   }
 
   return "Not scored yet because source collection and synthesis have not started.";
 }
 
 function buildThinEvidenceWarnings(currentRun: ReportRunSummary | null): ReportThinEvidenceWarning[] {
+  if (currentRun?.canonicalReport) {
+    const warnings: ReportThinEvidenceWarning[] = [];
+    const canonicalReport = currentRun.canonicalReport;
+    const coverage = canonicalReport.evidence_coverage;
+
+    if (coverage.thin_evidence || coverage.overall_coverage.coverage_level === "thin") {
+      warnings.push({
+        id: "low-coverage",
+        level: "warning",
+        title: "Evidence coverage is still thin",
+        message: `Evidence coverage is ${coverage.research_completeness_score}/100, so some sections should be treated as directional rather than conclusive.`,
+        sourceIds: canonicalCitationSourceIds(
+          coverage.section_coverage.flatMap((section) => section.citations),
+        ),
+      });
+    }
+
+    if (coverage.overall_confidence.confidence_band === "low") {
+      warnings.push({
+        id: "low-confidence",
+        level: "warning",
+        title: "Overall confidence is low",
+        message: coverage.overall_confidence.rationale,
+        sourceIds: canonicalCitationSourceIds(canonicalReport.executive_summary.citations),
+      });
+    }
+
+    coverage.evidence_gaps.slice(0, 3).forEach((gap, index) => {
+      warnings.push({
+        id: `evidence-gap-${index + 1}`,
+        level: "info",
+        title: "Open evidence gap",
+        message: gap,
+        sourceIds: canonicalCitationSourceIds(canonicalReport.executive_summary.citations),
+      });
+    });
+
+    canonicalReport.confidence_notes.slice(0, 3).forEach((note, index) => {
+      warnings.push({
+        id: `confidence-note-${index + 1}`,
+        level: note.level,
+        title: note.related_sections.length > 0 ? "Confidence note" : "Evidence note",
+        message: note.note,
+        sourceIds: canonicalCitationSourceIds(note.citations),
+      });
+    });
+
+    return warnings;
+  }
+
   if (!currentRun?.researchSummary) {
     return currentRun?.status === "completed"
       ? [
@@ -566,7 +969,9 @@ function buildThinEvidenceWarnings(currentRun: ReportRunSummary | null): ReportT
             id: "missing-research-summary",
             level: "warning",
             title: "Research output is incomplete",
-            message: "The run completed, but no research summary was persisted for the public report view.",
+            message: isDeepResearchRun(currentRun)
+              ? "The deep research run completed, but no canonical research summary was persisted for the public report view."
+              : "The run completed, but no research summary was persisted for the public report view.",
             sourceIds: [],
           },
         ]
@@ -649,7 +1054,10 @@ function serializeCreateResponse(input: {
     disposition: input.disposition,
     reuseReason: input.reuseReason,
     report: serializeReport(input.shell.report),
-    currentRun: serializeRun(input.shell.currentRun)!,
+    currentRun: serializeRun({
+      run: input.shell.currentRun,
+      reportStatus: input.shell.report.status,
+    })!,
     message: buildShellMessage(input.shell),
   } satisfies Omit<CreateReportResponse, "shareUrl" | "statusUrl">;
 }
@@ -660,6 +1068,22 @@ function getStatusPollInterval(currentRun: ReportRunSummary | null, reportStatus
   }
 
   if (!currentRun) {
+    return STATUS_POLL_INTERVAL_MS;
+  }
+
+  if (currentRun.displayStatus === "failed" || currentRun.displayStatus === "completed") {
+    return 0;
+  }
+
+  if (currentRun.displayStatus === "queued") {
+    return STATUS_POLL_INTERVAL_MS;
+  }
+
+  if (currentRun.openaiResponseStatus === "in_progress") {
+    return STATUS_POLL_INTERVAL_SLOW_MS;
+  }
+
+  if (currentRun.openaiResponseStatus === "queued") {
     return STATUS_POLL_INTERVAL_MS;
   }
 
@@ -678,95 +1102,42 @@ function getStatusPollInterval(currentRun: ReportRunSummary | null, reportStatus
   return STATUS_POLL_INTERVAL_MS;
 }
 
-async function dispatchBackgroundRefresh(input: {
+async function startBackgroundRefresh(input: {
   repository: ReportRepository;
-  dispatcher: ReturnType<typeof createPipelineDispatcher>;
+  reportGenerationService: DeepResearchReportGenerationService;
   shareIdGenerator: () => string;
   normalizedInputUrl: string;
   canonicalDomain: string;
   companyName: string | null;
 }): Promise<BackgroundRefreshResult> {
   const shareId = await generateAvailableShareId(input.repository, input.shareIdGenerator);
-  const preferredExecutionMode = input.dispatcher.resolvePreferredExecutionMode();
   const created = await input.repository.createQueuedReport({
     shareId,
     normalizedInputUrl: input.normalizedInputUrl,
     canonicalDomain: input.canonicalDomain,
     companyName: input.companyName,
-    executionMode: preferredExecutionMode,
+    executionMode: "inline",
   });
 
   try {
-    const dispatchResult = await input.dispatcher.dispatch({
-      runId: created.currentRun.id,
-    });
-
-    await input.repository.setRunDispatchState({
-      reportId: created.report.id,
-      runId: created.currentRun.id,
-      executionMode: dispatchResult.executionMode,
-      queueMessageId: dispatchResult.queueMessageId,
-      statusMessage: dispatchResult.statusMessage,
-    });
-
-    await input.repository.appendRunEvent({
-      reportId: created.report.id,
-      runId: created.currentRun.id,
-      level: "info",
-      eventType: "pipeline.dispatched",
-      message: dispatchResult.statusMessage,
-      metadata: {
-        executionMode: dispatchResult.executionMode,
-        queueMessageId: dispatchResult.queueMessageId,
-        refreshReason: "stale_domain_cache",
-      },
+    await input.reportGenerationService.startReportRun({
+      report: created.report,
+      run: created.currentRun,
     });
 
     logServerEvent("info", "report.cache_refresh.started", {
       canonicalDomain: input.canonicalDomain,
       shareId,
       runId: created.currentRun.id,
-      executionMode: dispatchResult.executionMode,
+      executionMode: "inline",
     });
 
     return {
       shareId,
       runId: created.currentRun.id,
-      executionMode: dispatchResult.executionMode,
+      executionMode: "inline",
     };
   } catch (error) {
-    const failedAt = new Date();
-    const errorMessage = error instanceof Error ? error.message : "Unable to start the background refresh.";
-
-    await input.repository.updateRunStepState({
-      reportId: created.report.id,
-      runId: created.currentRun.id,
-      status: "failed",
-      stepKey: null,
-      progressPercent: 0,
-      statusMessage: "The background refresh could not be dispatched.",
-      executionMode: preferredExecutionMode,
-      pipelineState: created.currentRun.pipelineState,
-      queueMessageId: null,
-      failedAt,
-      errorCode: "PIPELINE_DISPATCH_FAILED",
-      errorMessage,
-      reportStatus: "failed",
-      reportFailedAt: failedAt,
-    });
-
-    await input.repository.appendRunEvent({
-      reportId: created.report.id,
-      runId: created.currentRun.id,
-      level: "error",
-      eventType: "pipeline.dispatch.failed",
-      message: `Failed to dispatch the background refresh: ${errorMessage}`,
-      metadata: {
-        executionMode: preferredExecutionMode,
-        refreshReason: "stale_domain_cache",
-      },
-    });
-
     logServerEvent("warn", "report.cache_refresh.dispatch_failed", {
       canonicalDomain: input.canonicalDomain,
       shareId,
@@ -781,8 +1152,15 @@ async function dispatchBackgroundRefresh(input: {
 export function createReportService(dependencies: ReportServiceDependencies = {}) {
   const repository = dependencies.repository ?? drizzleReportRepository;
   const shareIdGenerator = dependencies.shareIdGenerator ?? createShareId;
-  const dispatcher = dependencies.dispatcher ?? createPipelineDispatcher();
+  const reportGenerationService =
+    dependencies.reportGenerationService ?? createDeepResearchReportGenerationService({ repository });
   const exportService = dependencies.exportService ?? createReportExportService({ repository });
+
+  const hydrateShell = async (shareId: string, shell?: StoredReportShell | null) =>
+    reportGenerationService.syncReportRun({
+      shareId,
+      shell,
+    });
 
   const materializeArtifactIfMissing = async (input: {
     shareId: string;
@@ -796,7 +1174,7 @@ export function createReportService(dependencies: ReportServiceDependencies = {}
       return artifact;
     }
 
-    const shell = input.shell ?? (await repository.findReportShellByShareId(input.shareId));
+    const shell = await hydrateShell(input.shareId, input.shell);
 
     if (!shell?.currentRun || !isReadyLikeReportStatus(shell.report.status)) {
       return null;
@@ -868,9 +1246,9 @@ export function createReportService(dependencies: ReportServiceDependencies = {}
         let backgroundRefresh: BackgroundRefreshResult = null;
 
         if (!usableIsRecent && !activeRefreshInFlight) {
-          backgroundRefresh = await dispatchBackgroundRefresh({
+          backgroundRefresh = await startBackgroundRefresh({
             repository,
-            dispatcher,
+            reportGenerationService,
             shareIdGenerator,
             normalizedInputUrl,
             canonicalDomain,
@@ -1021,53 +1399,20 @@ export function createReportService(dependencies: ReportServiceDependencies = {}
       }
 
       const shareId = await generateAvailableShareId(repository, shareIdGenerator);
-      const preferredExecutionMode = dispatcher.resolvePreferredExecutionMode();
       const created = await repository.createQueuedReport({
         shareId,
         normalizedInputUrl,
         canonicalDomain,
         companyName: null,
-        executionMode: preferredExecutionMode,
+        executionMode: "inline",
       });
 
-      let dispatchResult: Awaited<ReturnType<typeof dispatcher.dispatch>>;
-
       try {
-        dispatchResult = await dispatcher.dispatch({
-          runId: created.currentRun.id,
+        await reportGenerationService.startReportRun({
+          report: created.report,
+          run: created.currentRun,
         });
       } catch (error) {
-        const failedAt = new Date();
-        const errorMessage = error instanceof Error ? error.message : "Unable to start the report pipeline.";
-
-        await repository.updateRunStepState({
-          reportId: created.report.id,
-          runId: created.currentRun.id,
-          status: "failed",
-          stepKey: null,
-          progressPercent: 0,
-          statusMessage: "The report run could not be dispatched.",
-          executionMode: preferredExecutionMode,
-          pipelineState: created.currentRun.pipelineState,
-          queueMessageId: null,
-          failedAt,
-          errorCode: "PIPELINE_DISPATCH_FAILED",
-          errorMessage,
-          reportStatus: "failed",
-          reportFailedAt: failedAt,
-        });
-
-        await repository.appendRunEvent({
-          reportId: created.report.id,
-          runId: created.currentRun.id,
-          level: "error",
-          eventType: "pipeline.dispatch.failed",
-          message: `Failed to dispatch the report pipeline: ${errorMessage}`,
-          metadata: {
-            executionMode: preferredExecutionMode,
-          },
-        });
-
         await repository.recordReportRequest({
           requesterHash,
           normalizedInputUrl,
@@ -1086,26 +1431,6 @@ export function createReportService(dependencies: ReportServiceDependencies = {}
         throw error;
       }
 
-      await repository.setRunDispatchState({
-        reportId: created.report.id,
-        runId: created.currentRun.id,
-        executionMode: dispatchResult.executionMode,
-        queueMessageId: dispatchResult.queueMessageId,
-        statusMessage: dispatchResult.statusMessage,
-      });
-
-      await repository.appendRunEvent({
-        reportId: created.report.id,
-        runId: created.currentRun.id,
-        level: "info",
-        eventType: "pipeline.dispatched",
-        message: dispatchResult.statusMessage,
-        metadata: {
-          executionMode: dispatchResult.executionMode,
-          queueMessageId: dispatchResult.queueMessageId,
-        },
-      });
-
       await repository.recordReportRequest({
         requesterHash,
         normalizedInputUrl,
@@ -1119,10 +1444,10 @@ export function createReportService(dependencies: ReportServiceDependencies = {}
         canonicalDomain,
         shareId: created.report.shareId,
         runId: created.currentRun.id,
-        executionMode: dispatchResult.executionMode,
+        executionMode: "inline",
       });
 
-      const refreshed = await repository.findReportShellByShareId(shareId);
+      const refreshed = await hydrateShell(shareId);
 
       if (!refreshed || !refreshed.currentRun) {
         throw new Error("Created report run could not be reloaded after dispatch.");
@@ -1136,13 +1461,16 @@ export function createReportService(dependencies: ReportServiceDependencies = {}
     },
 
     async getReportShell(shareId: string): Promise<ReportShell | null> {
-      const shell = await repository.findReportShellByShareId(shareId);
+      const shell = await hydrateShell(shareId);
 
       if (!shell) {
         return null;
       }
 
-      const currentRun = serializeRun(shell.currentRun);
+      const currentRun = serializeRun({
+        run: shell.currentRun,
+        reportStatus: shell.report.status,
+      });
 
       return {
         report: serializeReport(shell.report),
@@ -1157,13 +1485,16 @@ export function createReportService(dependencies: ReportServiceDependencies = {}
     },
 
     async getReportDocument(shareId: string): Promise<ReportDocument | null> {
-      const shell = await repository.findReportShellByShareId(shareId);
+      const shell = await hydrateShell(shareId);
 
       if (!shell) {
         return null;
       }
 
-      const currentRun = serializeRun(shell.currentRun);
+      const currentRun = serializeRun({
+        run: shell.currentRun,
+        reportStatus: shell.report.status,
+      });
       const sections = buildReportSections(currentRun);
 
       if (shell.currentRun && isReadyLikeReportStatus(shell.report.status)) {
@@ -1202,17 +1533,21 @@ export function createReportService(dependencies: ReportServiceDependencies = {}
     },
 
     async getReportStatusShell(shareId: string): Promise<ReportStatusShell | null> {
-      const shell = await repository.findReportShellByShareId(shareId);
+      const shell = await hydrateShell(shareId);
 
       if (!shell) {
         return null;
       }
 
-      const currentRun = serializeRun(shell.currentRun);
+      const currentRun = serializeRun({
+        run: shell.currentRun,
+        reportStatus: shell.report.status,
+      });
 
       return {
         shareId,
         statusUrl: createStatusUrl(shareId),
+        displayStatus: currentRun?.displayStatus ?? null,
         report: {
           shareId: shell.report.shareId,
           status: shell.report.status,

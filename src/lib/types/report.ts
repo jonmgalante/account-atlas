@@ -1,8 +1,10 @@
+import type { CanonicalAccountAtlasReportShape } from "@/lib/canonical-report";
 import type { ResearchSummary } from "@/lib/types/research";
 import type { SourceType } from "@/lib/source";
 
 export type ReportLifecycleStatus = "queued" | "running" | "ready" | "ready_with_limited_coverage" | "failed";
-export type MotionRecommendation = "workspace" | "api_platform" | "hybrid" | "undetermined";
+export const motionRecommendationValues = ["workspace", "api_platform", "hybrid", "undetermined"] as const;
+export type MotionRecommendation = (typeof motionRecommendationValues)[number];
 export type ReportArtifactType = "markdown" | "pdf" | "structured_json" | "source_bundle";
 export type ReportReuseReason = "recent_completed" | "cached_completed" | "in_progress" | "recent_failed" | null;
 export type ReportContentState = "pending" | "partial" | "ready" | "failed";
@@ -15,6 +17,13 @@ export type ReportRunLifecycleStatus =
   | "completed"
   | "failed"
   | "cancelled";
+
+export type ReportRunDisplayStatus =
+  | "queued"
+  | "in_progress"
+  | "completed"
+  | "completed_with_grounded_fallback"
+  | "failed";
 
 export type ReportEventLevel = "info" | "warning" | "error";
 
@@ -33,17 +42,20 @@ export type PipelineStepKey =
 
 export type PipelineStepStatus = "pending" | "running" | "retrying" | "completed" | "failed";
 
-export type ReportSectionKey =
-  | "company-brief"
-  | "fact-base"
-  | "ai-maturity-signals"
-  | "prioritized-use-cases"
-  | "recommended-motion"
-  | "stakeholder-hypotheses"
-  | "objections"
-  | "discovery-questions"
-  | "pilot-plan"
-  | "expansion-scenarios";
+export const reportSectionValues = [
+  "company-brief",
+  "fact-base",
+  "ai-maturity-signals",
+  "prioritized-use-cases",
+  "recommended-motion",
+  "stakeholder-hypotheses",
+  "objections",
+  "discovery-questions",
+  "pilot-plan",
+  "expansion-scenarios",
+] as const;
+
+export type ReportSectionKey = (typeof reportSectionValues)[number];
 
 export type ReportSectionShell = {
   key: ReportSectionKey;
@@ -89,11 +101,14 @@ export type ReportRunProgress = {
 export type ReportRunSummary = {
   id: number;
   status: ReportRunLifecycleStatus;
+  displayStatus: ReportRunDisplayStatus;
   progressPercent: number;
   stepKey: PipelineStepKey | null;
   stepLabel: string | null;
   executionMode: PipelineExecutionMode;
   statusMessage: string;
+  openaiResponseId: string | null;
+  openaiResponseStatus: string | null;
   errorCode: string | null;
   errorMessage: string | null;
   createdAt: string;
@@ -102,6 +117,7 @@ export type ReportRunSummary = {
   completedAt: string | null;
   failedAt: string | null;
   progress: ReportRunProgress;
+  canonicalReport: CanonicalAccountAtlasReportShape | null;
   researchSummary: ResearchSummary | null;
   accountPlan: import("@/lib/types/account-plan").FinalAccountPlan | null;
 };
@@ -117,6 +133,7 @@ export type ReportProgressEvent = {
 
 export type ReportSourceRecord = {
   id: number;
+  canonicalSourceId: number | null;
   title: string;
   url: string;
   canonicalDomain: string;
@@ -210,6 +227,7 @@ export type CreateReportResponse = {
 export type ReportStatusShell = {
   shareId: string;
   statusUrl: string;
+  displayStatus: ReportRunDisplayStatus | null;
   report: Pick<ReportSummary, "shareId" | "status" | "createdAt" | "updatedAt" | "completedAt">;
   currentRun: ReportRunSummary | null;
   result: ReportResultMeta;

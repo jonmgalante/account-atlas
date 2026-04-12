@@ -23,6 +23,13 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useReportStatus } from "@/hooks/use-report-status";
+import {
+  buildCanonicalOpportunityScorecard,
+  canonicalCitationSourceIds,
+  getDisplaySourceId,
+  hasCanonicalExpansionScenario,
+  isCanonicalGroundedFallbackReport,
+} from "@/lib/canonical-report";
 import { formatDateTime } from "@/lib/date";
 import { addRecentReport } from "@/lib/recent-reports";
 import type { ApiResponse } from "@/lib/types/api";
@@ -40,6 +47,22 @@ type ReportExperienceProps = {
   initialDocument: ReportDocument;
   initialStatus: ReportStatusShell | null;
 };
+
+type CanonicalOpportunity = NonNullable<NonNullable<ReportRunSummary["canonicalReport"]>["top_opportunities"]>[number];
+type LegacyOpportunity = NonNullable<NonNullable<ReportRunSummary["accountPlan"]>["candidateUseCases"]>[number];
+type RenderableOpportunity = CanonicalOpportunity | LegacyOpportunity;
+type CanonicalStakeholder =
+  NonNullable<NonNullable<ReportRunSummary["canonicalReport"]>["buying_map"]["stakeholder_hypotheses"]>[number];
+type LegacyStakeholder = NonNullable<NonNullable<ReportRunSummary["accountPlan"]>["stakeholderHypotheses"]>[number];
+type RenderableStakeholder = CanonicalStakeholder | LegacyStakeholder;
+type CanonicalObjection =
+  NonNullable<NonNullable<ReportRunSummary["canonicalReport"]>["buying_map"]["likely_objections"]>[number];
+type LegacyObjection = NonNullable<NonNullable<ReportRunSummary["accountPlan"]>["objectionsAndRebuttals"]>[number];
+type RenderableObjection = CanonicalObjection | LegacyObjection;
+type CanonicalDiscoveryQuestion =
+  NonNullable<NonNullable<ReportRunSummary["canonicalReport"]>["buying_map"]["discovery_questions"]>[number];
+type LegacyDiscoveryQuestion = NonNullable<NonNullable<ReportRunSummary["accountPlan"]>["discoveryQuestions"]>[number];
+type RenderableDiscoveryQuestion = CanonicalDiscoveryQuestion | LegacyDiscoveryQuestion;
 
 type ReportMode = "brief" | "evidence" | "build";
 
@@ -69,7 +92,7 @@ const reportAnchorItemsByMode: Record<
     { id: "research", label: "Research" },
     { id: "sources", label: "Sources" },
   ],
-  build: [{ id: "build-details", label: "Build details" }],
+  build: [{ id: "build-details", label: "Details" }],
 };
 
 const reportModeByAnchorId: Record<string, ReportMode> = {
@@ -97,25 +120,25 @@ const compactSectionGroups: ReadonlyArray<{
   },
   {
     id: "use-cases",
-    label: "Use Cases",
+    label: "Top opportunities",
     keys: ["prioritized-use-cases", "recommended-motion"],
     pendingDescription: "Ranked opportunities and motion fit will appear here once planning has enough evidence.",
   },
   {
     id: "stakeholders",
-    label: "Stakeholders",
+    label: "Buying map",
     keys: ["stakeholder-hypotheses", "objections", "discovery-questions"],
     pendingDescription: "Likely sponsors, objections, and discovery paths appear here once planning is ready.",
   },
   {
     id: "pilot-plan",
-    label: "Pilot Plan",
+    label: "90-day pilot",
     keys: ["pilot-plan"],
     pendingDescription: "The pilot structure appears here once the top opportunity and motion are ready.",
   },
   {
     id: "expansion-scenarios",
-    label: "Expansion Scenarios",
+    label: "Expansion",
     keys: ["expansion-scenarios"],
     pendingDescription: "Scenario planning appears here after the brief has enough evidence to frame adoption paths.",
   },
@@ -140,6 +163,67 @@ function formatSourceTypeLabel(sourceType: string) {
     .replace("company_social_profile", "company social")
     .replace("executive_social_profile", "executive social")
     .replaceAll("_", " ");
+}
+
+function getRenderableOpportunity(useCase: RenderableOpportunity) {
+  const scorecard = "scorecard" in useCase ? useCase.scorecard : buildCanonicalOpportunityScorecard(useCase);
+
+  return {
+    key: "workflow_name" in useCase ? useCase.workflow_name : useCase.workflowName,
+    priorityRank: "priority_rank" in useCase ? useCase.priority_rank : useCase.priorityRank,
+    department: useCase.department,
+    workflowName: "workflow_name" in useCase ? useCase.workflow_name : useCase.workflowName,
+    summary: useCase.summary,
+    painPoint: "pain_point" in useCase ? useCase.pain_point : useCase.painPoint,
+    whyNow: "why_now" in useCase ? useCase.why_now : useCase.whyNow,
+    likelyUsers: "likely_users" in useCase ? useCase.likely_users : useCase.likelyUsers,
+    expectedOutcome: "expected_outcome" in useCase ? useCase.expected_outcome : useCase.expectedOutcome,
+    metrics: "success_metrics" in useCase ? useCase.success_metrics : useCase.metrics,
+    dependencies: useCase.dependencies,
+    securityComplianceNotes:
+      "security_compliance_notes" in useCase ? useCase.security_compliance_notes : useCase.securityComplianceNotes,
+    recommendedMotion:
+      "recommended_motion" in useCase ? useCase.recommended_motion : useCase.recommendedMotion,
+    motionRationale: "motion_rationale" in useCase ? useCase.motion_rationale : useCase.motionRationale,
+    openQuestions: "open_questions" in useCase ? useCase.open_questions : useCase.openQuestions,
+    sourceIds: "citations" in useCase ? canonicalCitationSourceIds(useCase.citations) : useCase.evidenceSourceIds,
+    scorecard,
+  };
+}
+
+function getRenderableStakeholder(stakeholder: RenderableStakeholder) {
+  const confidence =
+    "citations" in stakeholder
+      ? stakeholder.confidence.confidence_score
+      : stakeholder.confidence;
+
+  return {
+    key: "likely_role" in stakeholder ? stakeholder.likely_role : stakeholder.likelyRole,
+    likelyRole: "likely_role" in stakeholder ? stakeholder.likely_role : stakeholder.likelyRole,
+    department: stakeholder.department,
+    hypothesis: stakeholder.hypothesis,
+    rationale: stakeholder.rationale,
+    confidence,
+    sourceIds: "citations" in stakeholder ? canonicalCitationSourceIds(stakeholder.citations) : stakeholder.evidenceSourceIds,
+  };
+}
+
+function getRenderableObjection(item: RenderableObjection) {
+  return {
+    key: item.objection,
+    objection: item.objection,
+    rebuttal: item.rebuttal,
+    sourceIds: "citations" in item ? canonicalCitationSourceIds(item.citations) : item.evidenceSourceIds,
+  };
+}
+
+function getRenderableDiscoveryQuestion(item: RenderableDiscoveryQuestion) {
+  return {
+    key: item.question,
+    question: item.question,
+    whyItMatters: "why_it_matters" in item ? item.why_it_matters : item.whyItMatters,
+    sourceIds: "citations" in item ? canonicalCitationSourceIds(item.citations) : item.evidenceSourceIds,
+  };
 }
 
 function classificationBadgeClass(classification: ReportFactRecord["classification"]) {
@@ -196,6 +280,23 @@ function formatHeroStatusLabel(status: string) {
   return formatReportStatusLabel(status);
 }
 
+function formatDisplayStatusLabel(status: ReportRunSummary["displayStatus"] | ReportStatusShell["displayStatus"]) {
+  switch (status) {
+    case "queued":
+      return "Queued";
+    case "in_progress":
+      return "Building report";
+    case "completed":
+      return "Ready";
+    case "completed_with_grounded_fallback":
+      return "Grounded brief ready";
+    case "failed":
+      return "Failed";
+    default:
+      return "Building report";
+  }
+}
+
 function getExportButtonState(input: {
   artifactDownloadPath: string | null;
   artifactType: "markdown" | "pdf";
@@ -204,16 +305,16 @@ function getExportButtonState(input: {
   run: ReportRunSummary | null;
 }) {
   const exportLabel = input.artifactType === "pdf" ? "PDF" : "Markdown";
-  const exportStepKey = input.artifactType === "pdf" ? "export_pdf" : "export_markdown";
-  const exportStep = input.run?.progress.steps.find((step) => step.key === exportStepKey) ?? null;
   const canGenerateOnDemand =
-    input.isTerminalReport && Boolean(input.run) && (input.run?.status === "completed" || exportStep?.status === "completed");
+    input.isTerminalReport &&
+    Boolean(input.run) &&
+    (input.run?.displayStatus === "completed" || input.run?.displayStatus === "completed_with_grounded_fallback");
 
   if (input.artifactDownloadPath) {
     return {
       disabled: false,
       href: input.artifactDownloadPath,
-      label: exportLabel,
+      label: `Download ${exportLabel}`,
     };
   }
 
@@ -221,14 +322,14 @@ function getExportButtonState(input: {
     return {
       disabled: false,
       href: `/api/reports/${input.shareId}/artifacts/${input.artifactType}`,
-      label: `Generate ${exportLabel}`,
+      label: `Prepare ${exportLabel}`,
     };
   }
 
   return {
     disabled: true,
     href: null,
-    label: `Preparing ${exportLabel}`,
+    label: `${exportLabel} pending`,
   };
 }
 
@@ -269,11 +370,11 @@ function getHeroSummary({
   currentRunStatus: string | null;
 }) {
   if (isBuildingReport) {
-    return "Seller-first brief built from public-web evidence, with completed sections appearing as soon as they are ready.";
+    return "Seller-first brief built from public-web evidence. The saved brief will appear here as soon as it is ready.";
   }
 
   if (currentRunStatus === "failed" && !hasReadySections) {
-    return "Seller-first brief built from public-web evidence, but this run ended before the full brief was ready.";
+    return "Seller-first brief built from public-web evidence, but this run ended before a usable brief was ready.";
   }
 
   return "Seller-first brief built from public-web evidence, with sources, confidence, and uncertainty kept visible.";
@@ -287,7 +388,8 @@ function normalizeVisibleCopy(text: string) {
     .replaceAll("public report", "shareable report")
     .replaceAll("public web", "public-web")
     .replaceAll("Research completeness", "Evidence coverage")
-    .replaceAll("report pipeline", "report build");
+    .replaceAll("report pipeline", "report build")
+    .replaceAll("canonical report", "saved brief");
 }
 
 function EmptySection({
@@ -448,45 +550,86 @@ export function ReportExperience({
   ]);
 
   const currentRun = document.currentRun;
+  const liveRun = status?.isTerminal ? status.currentRun ?? currentRun : status?.currentRun ?? currentRun;
+  const canonicalReport = liveRun?.canonicalReport ?? currentRun?.canonicalReport ?? null;
   const researchSummary = currentRun?.researchSummary ?? null;
   const accountPlan = currentRun?.accountPlan ?? null;
-  const isGroundedFallbackBrief = accountPlan?.publishMode === "grounded_fallback";
+  const isGroundedFallbackBrief = canonicalReport
+    ? isCanonicalGroundedFallbackReport(canonicalReport)
+    : accountPlan?.publishMode === "grounded_fallback";
+  const canonicalTopOpportunities = canonicalReport
+    ? [...canonicalReport.top_opportunities].sort((left, right) => left.priority_rank - right.priority_rank)
+    : [];
   const topUseCaseKeys = new Set(
     accountPlan?.topUseCases.map((useCase) => `${useCase.priorityRank}-${useCase.workflowName}`) ?? [],
   );
-  const remainingUseCases =
-    accountPlan?.candidateUseCases.filter(
-      (useCase) => !topUseCaseKeys.has(`${useCase.priorityRank}-${useCase.workflowName}`),
-    ) ?? [];
-  const topOpportunity = isGroundedFallbackBrief
-    ? accountPlan?.topUseCases[0] ?? null
-    : accountPlan?.topUseCases[0] ?? accountPlan?.candidateUseCases[0] ?? null;
+  const remainingUseCases = canonicalReport
+    ? canonicalTopOpportunities.slice(3)
+    : accountPlan?.candidateUseCases.filter(
+        (useCase) => !topUseCaseKeys.has(`${useCase.priorityRank}-${useCase.workflowName}`),
+      ) ?? [];
+  const topOpportunity = canonicalReport
+    ? canonicalTopOpportunities[0] ?? null
+    : isGroundedFallbackBrief
+      ? accountPlan?.topUseCases[0] ?? null
+      : accountPlan?.topUseCases[0] ?? accountPlan?.candidateUseCases[0] ?? null;
+  const stakeholderHypotheses = canonicalReport?.buying_map.stakeholder_hypotheses ?? accountPlan?.stakeholderHypotheses ?? [];
+  const objections = canonicalReport?.buying_map.likely_objections ?? accountPlan?.objectionsAndRebuttals ?? [];
+  const discoveryQuestions = canonicalReport?.buying_map.discovery_questions ?? accountPlan?.discoveryQuestions ?? [];
+  const pilotPlan = canonicalReport?.pilot_plan ?? accountPlan?.pilotPlan ?? null;
+  const expansionScenarios = canonicalReport?.expansion_scenarios ?? accountPlan?.expansionScenarios ?? {
+    low: null,
+    base: null,
+    high: null,
+  };
+  const executiveSummary = canonicalReport?.executive_summary ?? null;
+  const factBase = canonicalReport?.fact_base ?? [];
+  const aiMaturitySignals = canonicalReport?.ai_maturity_signals ?? null;
   const markdownArtifact = document.artifacts.find((artifact) => artifact.artifactType === "markdown") ?? null;
   const pdfArtifact = document.artifacts.find((artifact) => artifact.artifactType === "pdf") ?? null;
   const downloadableMarkdownArtifact = markdownArtifact?.downloadPath ? markdownArtifact : null;
   const downloadablePdfArtifact = pdfArtifact?.downloadPath ? pdfArtifact : null;
   const liveReportStatus = status?.report.status ?? document.report.status;
+  const liveDisplayStatus = status?.displayStatus ?? liveRun?.displayStatus ?? currentRun?.displayStatus ?? null;
   const readySectionCount = document.sections.filter((section) => section.status === "ready").length;
-  const researchCompleteness = researchSummary?.researchCompletenessScore ?? null;
-  const motionRecommendation = accountPlan
-    ? formatMotionLabel(accountPlan.overallAccountMotion.recommendedMotion)
-    : "Pending";
+  const researchCompleteness =
+    canonicalReport?.evidence_coverage.research_completeness_score ?? researchSummary?.researchCompletenessScore ?? null;
+  const motionRecommendation = canonicalReport
+    ? formatMotionLabel(canonicalReport.recommended_motion.recommended_motion)
+    : accountPlan
+      ? formatMotionLabel(accountPlan.overallAccountMotion.recommendedMotion)
+      : "Pending";
   const companyDisplayName =
-    researchSummary?.companyIdentity.companyName ?? document.report.companyName ?? document.report.canonicalDomain;
-  const primaryStatusLabel = formatReportStatusLabel(liveReportStatus, researchCompleteness);
-  const heroStatusLabel = formatHeroStatusLabel(liveReportStatus);
-  const isBuildingReport = liveReportStatus === "queued" || liveReportStatus === "running";
-  const hasResearchContent = Boolean(researchSummary || document.facts.length > 0);
-  const hasPlanningContent = Boolean(accountPlan && topOpportunity && accountPlan.overallAccountMotion.rationale);
-  const hasGroundedHypothesisContent = Boolean(isGroundedFallbackBrief && (accountPlan?.candidateUseCases.length ?? 0) > 0);
-  const hasStakeholderContent = Boolean(accountPlan?.stakeholderHypotheses.length);
-  const hasDiscoveryContent = Boolean(
-    accountPlan && (accountPlan.objectionsAndRebuttals.length > 0 || accountPlan.discoveryQuestions.length > 0),
-  );
-  const hasPilotPlanContent = Boolean(accountPlan?.pilotPlan);
-  const hasExpansionContent = Boolean(
-    accountPlan?.expansionScenarios.low ?? accountPlan?.expansionScenarios.base ?? accountPlan?.expansionScenarios.high,
-  );
+    canonicalReport?.company.resolved_name ??
+    researchSummary?.companyIdentity.companyName ??
+    document.report.companyName ??
+    document.report.canonicalDomain;
+  const primaryStatusLabel = liveDisplayStatus
+    ? formatDisplayStatusLabel(liveDisplayStatus)
+    : formatReportStatusLabel(liveReportStatus, researchCompleteness);
+  const heroStatusLabel =
+    liveDisplayStatus && liveDisplayStatus !== "completed"
+      ? formatDisplayStatusLabel(liveDisplayStatus)
+      : formatHeroStatusLabel(liveReportStatus);
+  const isBuildingReport =
+    liveDisplayStatus !== null
+      ? liveDisplayStatus === "queued" || liveDisplayStatus === "in_progress"
+      : liveReportStatus === "queued" || liveReportStatus === "running";
+  const hasResearchContent = canonicalReport
+    ? Boolean(executiveSummary || aiMaturitySignals || factBase.length > 0)
+    : Boolean(researchSummary || document.facts.length > 0);
+  const hasPlanningContent = canonicalReport
+    ? Boolean(topOpportunity && canonicalReport.recommended_motion.rationale)
+    : Boolean(accountPlan && topOpportunity && accountPlan.overallAccountMotion.rationale);
+  const hasGroundedHypothesisContent = canonicalReport
+    ? Boolean(isGroundedFallbackBrief && canonicalTopOpportunities.length > 0)
+    : Boolean(isGroundedFallbackBrief && (accountPlan?.candidateUseCases.length ?? 0) > 0);
+  const hasStakeholderContent = Boolean(stakeholderHypotheses.length);
+  const hasDiscoveryContent = Boolean(objections.length > 0 || discoveryQuestions.length > 0);
+  const hasPilotPlanContent = Boolean(pilotPlan);
+  const hasExpansionContent = canonicalReport
+    ? hasCanonicalExpansionScenario(canonicalReport)
+    : Boolean(accountPlan?.expansionScenarios.low ?? accountPlan?.expansionScenarios.base ?? accountPlan?.expansionScenarios.high);
   const hasSourcesContent = document.sources.length > 0;
   const showResearchSection = !isBuildingReport || hasResearchContent;
   const showUseCasesSection = !isBuildingReport || hasPlanningContent || hasGroundedHypothesisContent;
@@ -532,13 +675,15 @@ export function ReportExperience({
   const heroSummary = getHeroSummary({
     isBuildingReport,
     hasReadySections: readySectionCount > 0,
-    currentRunStatus: currentRun?.status ?? null,
+    currentRunStatus: liveRun?.displayStatus ?? currentRun?.status ?? null,
   });
   const activeAnchorItems = reportAnchorItemsByMode[reportMode];
   const hasSelectedSources = selectedSourceIds.length > 0;
-  const liveRun = status?.isTerminal ? status.currentRun ?? document.currentRun ?? currentRun : status?.currentRun ?? currentRun;
   const buildProgressPercent = liveRun?.progressPercent ?? null;
-  const buildStepLabel = liveRun?.stepLabel ?? null;
+  const buildStepLabel =
+    liveRun?.displayStatus === "queued" || liveRun?.displayStatus === "in_progress"
+      ? formatDisplayStatusLabel(liveRun.displayStatus)
+      : null;
   const lastUpdatedAt =
     status?.currentRun?.updatedAt ??
     status?.report.updatedAt ??
@@ -546,6 +691,7 @@ export function ReportExperience({
     document.report.updatedAt;
   const isTerminalReport = liveReportStatus === "ready" || liveReportStatus === "ready_with_limited_coverage";
   const showDesktopSourceRail = hasSelectedSources;
+  const showHardFailureState = document.result.state === "failed";
   const retryHref = `/?url=${encodeURIComponent(document.report.normalizedInputUrl)}`;
   const markdownButtonState = getExportButtonState({
     artifactDownloadPath: downloadableMarkdownArtifact?.downloadPath ?? null,
@@ -563,12 +709,25 @@ export function ReportExperience({
   });
   const briefPendingSectionTargets = pendingSectionTargets.filter((section) => section.id !== "research");
   const showBriefReadiness = isBuildingReport && briefPendingSectionTargets.length > 0;
-  const showMotionSummaryCard = Boolean(accountPlan && !isGroundedFallbackBrief);
+  const showMotionSummaryCard = canonicalReport
+    ? !isGroundedFallbackBrief
+    : Boolean(accountPlan && !isGroundedFallbackBrief);
   const showEvidenceSummaryCard = researchCompleteness !== null || document.result.hasThinEvidence || !isBuildingReport;
   const showTopOpportunitySummaryCard = Boolean(topOpportunity && !isGroundedFallbackBrief);
-  const showGroundedBriefSummaryCard = Boolean(isGroundedFallbackBrief && accountPlan?.groundedFallbackBrief?.summary);
+  const showGroundedBriefSummaryCard = canonicalReport
+    ? Boolean(isGroundedFallbackBrief && canonicalReport.grounded_fallback?.summary)
+    : Boolean(isGroundedFallbackBrief && accountPlan?.groundedFallbackBrief?.summary);
   const showSummaryHighlights =
     showMotionSummaryCard || showEvidenceSummaryCard || showTopOpportunitySummaryCard || showGroundedBriefSummaryCard;
+  const exportHelperText = isTerminalReport
+    ? downloadableMarkdownArtifact && downloadablePdfArtifact
+      ? "Markdown and PDF exports are generated from this saved brief."
+      : downloadableMarkdownArtifact && !downloadablePdfArtifact
+        ? "Markdown is ready now. PDF can be prepared on demand from this saved brief."
+        : !downloadableMarkdownArtifact && downloadablePdfArtifact
+          ? "PDF is ready now. Markdown can be prepared on demand from this saved brief."
+          : "Exports can be prepared from this saved brief whenever you need them."
+    : null;
 
   useEffect(() => {
     if (!status?.isTerminal) {
@@ -579,7 +738,9 @@ export function ReportExperience({
     let timer: ReturnType<typeof setTimeout> | null = null;
     let attempts = 0;
     const shouldRefreshExports =
-      liveRun?.status !== "completed" && (!downloadableMarkdownArtifact || !downloadablePdfArtifact);
+      liveRun?.displayStatus !== "completed" &&
+      liveRun?.displayStatus !== "completed_with_grounded_fallback" &&
+      (!downloadableMarkdownArtifact || !downloadablePdfArtifact);
 
     if (!shouldRefreshExports) {
       return;
@@ -604,11 +765,15 @@ export function ReportExperience({
           setDocument(nextDocument);
           setDocumentError(null);
 
-          const nextRunStatus = nextDocument.currentRun?.status ?? null;
+          const nextRunStatus = nextDocument.currentRun?.displayStatus ?? null;
           const nextMarkdownReady = hasDownloadableArtifact(nextDocument.artifacts, "markdown");
           const nextPdfReady = hasDownloadableArtifact(nextDocument.artifacts, "pdf");
 
-          if (nextRunStatus !== "completed" && (!nextMarkdownReady || !nextPdfReady)) {
+          if (
+            nextRunStatus !== "completed" &&
+            nextRunStatus !== "completed_with_grounded_fallback" &&
+            (!nextMarkdownReady || !nextPdfReady)
+          ) {
             scheduleRefresh(nextMarkdownReady ? 4_000 : 1_500);
           }
         } catch {
@@ -634,7 +799,7 @@ export function ReportExperience({
         clearTimeout(timer);
       }
     };
-  }, [downloadableMarkdownArtifact, downloadablePdfArtifact, liveRun?.status, shareId, status?.isTerminal]);
+  }, [downloadableMarkdownArtifact, downloadablePdfArtifact, liveRun?.displayStatus, shareId, status?.isTerminal]);
 
   const handleSelectSources = (sourceIds: number[]) => {
     setSelectedSourceIds(sourceIds);
@@ -768,7 +933,7 @@ export function ReportExperience({
                         {pdfButtonState.label}
                       </Button>
                     )}
-                    {currentRun?.status === "failed" ? (
+                    {showHardFailureState ? (
                       <Button type="button" size="sm" variant="outline" asChild>
                         <Link href={retryHref}>
                           <RefreshCcw className="h-4 w-4" />
@@ -779,11 +944,7 @@ export function ReportExperience({
                   </div>
                 </div>
 
-                {currentRun?.status === "completed" && downloadableMarkdownArtifact && !downloadablePdfArtifact ? (
-                  <p className="text-sm leading-7 text-foreground/70">
-                    PDF export can be generated on demand for this run. The Markdown export and shareable report remain available.
-                  </p>
-                ) : null}
+                {exportHelperText ? <p className="text-sm leading-7 text-foreground/70">{exportHelperText}</p> : null}
               </div>
 
               {showSummaryHighlights ? (
@@ -795,7 +956,7 @@ export function ReportExperience({
                       </div>
                       <div className="mt-2 font-medium text-foreground">{motionRecommendation}</div>
                       <p className="mt-2 text-sm leading-6 text-foreground/70">
-                        {accountPlan?.overallAccountMotion.rationale}
+                        {canonicalReport?.recommended_motion.rationale ?? accountPlan?.overallAccountMotion.rationale}
                       </p>
                     </div>
                   ) : null}
@@ -817,7 +978,13 @@ export function ReportExperience({
                       <div className="text-[11px] font-medium uppercase tracking-[0.22em] text-muted-foreground">
                         Top opportunity
                       </div>
-                      <div className="mt-2 font-medium text-foreground">{topOpportunity?.workflowName}</div>
+                      <div className="mt-2 font-medium text-foreground">
+                        {topOpportunity
+                          ? "workflow_name" in topOpportunity
+                            ? topOpportunity.workflow_name
+                            : topOpportunity.workflowName
+                          : null}
+                      </div>
                       <p className="mt-2 text-sm leading-6 text-foreground/70">{topOpportunity?.summary}</p>
                     </div>
                   ) : null}
@@ -827,7 +994,7 @@ export function ReportExperience({
                         Grounded brief
                       </div>
                       <p className="mt-2 text-sm leading-6 text-foreground/70">
-                        {accountPlan?.groundedFallbackBrief?.summary}
+                        {canonicalReport?.grounded_fallback?.summary ?? accountPlan?.groundedFallbackBrief?.summary}
                       </p>
                     </div>
                   ) : null}
@@ -846,11 +1013,11 @@ export function ReportExperience({
                   <div className="flex flex-wrap items-center justify-between gap-3">
                     <div className="flex flex-wrap items-center gap-3 text-xs text-foreground/70 sm:text-sm">
                       <Badge className="rounded-full px-3 py-1" variant="secondary">
-                        Building brief
+                        {primaryStatusLabel}
                       </Badge>
                       {buildStepLabel ? (
                         <span>
-                          Step <span className="font-medium text-foreground">{buildStepLabel}</span>
+                          Status <span className="font-medium text-foreground">{buildStepLabel}</span>
                         </span>
                       ) : null}
                       <span>
@@ -858,9 +1025,6 @@ export function ReportExperience({
                       </span>
                       <span>Updated {formatDateTime(lastUpdatedAt)}</span>
                     </div>
-                    <Button type="button" variant="outline" size="sm" onClick={handleOpenBuildDetails}>
-                      View build details
-                    </Button>
                   </div>
                   {buildProgressPercent !== null ? (
                     <div className="mt-2.5 flex items-center gap-3">
@@ -949,8 +1113,8 @@ export function ReportExperience({
                 title="Executive summary"
                 description="Seller-ready summary of account context, recommended motion, and the main evidence caveats."
               >
-                <div className={cn("grid gap-3.5", accountPlan ? "lg:grid-cols-[1.15fr_0.85fr]" : "lg:grid-cols-1")}>
-                  {accountPlan && !isGroundedFallbackBrief ? (
+                <div className={cn("grid gap-3.5", currentRun ? "lg:grid-cols-[1.15fr_0.85fr]" : "lg:grid-cols-1")}>
+                  {(canonicalReport || accountPlan) && !isGroundedFallbackBrief ? (
                     <Card className="border-strong/70 bg-card/80 shadow-panel">
                       <CardHeader className="space-y-3">
                         <CardTitle className="flex items-center gap-2 text-2xl">
@@ -961,26 +1125,34 @@ export function ReportExperience({
                       <CardContent className="space-y-4">
                         <div className="flex flex-wrap items-center gap-3">
                           <Badge className="rounded-full px-4 py-1.5 uppercase" variant="secondary">
-                            {formatMotionLabel(accountPlan.overallAccountMotion.recommendedMotion)}
+                            {motionRecommendation}
                           </Badge>
-                          {researchSummary ? (
-                            <span className={cn("text-sm font-medium", confidenceTone(researchSummary.researchCompletenessScore))}>
-                              Evidence coverage {researchSummary.researchCompletenessScore}/100
+                          {researchCompleteness !== null ? (
+                            <span className={cn("text-sm font-medium", confidenceTone(researchCompleteness))}>
+                              Evidence coverage {researchCompleteness}/100
                             </span>
                           ) : null}
                         </div>
                         <p className="text-sm leading-7 text-muted-foreground">
-                          {accountPlan.overallAccountMotion.rationale}
+                          {canonicalReport?.recommended_motion.rationale ?? accountPlan?.overallAccountMotion.rationale}
                         </p>
                         {topOpportunity ? (
                           <div className="rounded-3xl border border-border/70 bg-background/75 p-4">
                             <div className="font-medium text-foreground">Top opportunity</div>
-                            <div className="mt-2 text-base text-foreground">{topOpportunity.workflowName}</div>
-                            <p className="mt-2 text-sm leading-7 text-muted-foreground">{topOpportunity.summary}</p>
+                            <div className="mt-2 text-base text-foreground">
+                              {"workflow_name" in topOpportunity ? topOpportunity.workflow_name : topOpportunity.workflowName}
+                            </div>
+                            <p className="mt-2 text-sm leading-7 text-muted-foreground">
+                              {"summary" in topOpportunity ? topOpportunity.summary : null}
+                            </p>
                           </div>
                         ) : null}
                         <EvidencePills
-                          sourceIds={accountPlan.overallAccountMotion.evidenceSourceIds}
+                          sourceIds={
+                            canonicalReport
+                              ? canonicalCitationSourceIds(canonicalReport.recommended_motion.citations)
+                              : accountPlan?.overallAccountMotion.evidenceSourceIds ?? []
+                          }
                           sources={document.sources}
                           onSelectSources={handleSelectSources}
                         />
@@ -988,10 +1160,10 @@ export function ReportExperience({
                     </Card>
                   ) : null}
 
-                  {accountPlan && isGroundedFallbackBrief ? (
-                    <Card className="border-strong/70 bg-card/80 shadow-panel">
-                      <CardHeader className="space-y-3">
-                        <CardTitle className="flex items-center gap-2 text-2xl">
+                  {(canonicalReport || accountPlan) && isGroundedFallbackBrief ? (
+                  <Card className="border-strong/70 bg-card/80 shadow-panel">
+                    <CardHeader className="space-y-3">
+                      <CardTitle className="flex items-center gap-2 text-2xl">
                           <Target className="h-5 w-5 text-primary" />
                           Grounded brief
                         </CardTitle>
@@ -999,27 +1171,33 @@ export function ReportExperience({
                       <CardContent className="space-y-4">
                         <div className="flex flex-wrap items-center gap-3">
                           <Badge className="rounded-full px-4 py-1.5 uppercase" variant="secondary">
-                            Focused publish mode
+                            Grounded brief
                           </Badge>
-                          {researchSummary ? (
-                            <span className={cn("text-sm font-medium", confidenceTone(researchSummary.researchCompletenessScore))}>
-                              Evidence coverage {researchSummary.researchCompletenessScore}/100
+                          {researchCompleteness !== null ? (
+                            <span className={cn("text-sm font-medium", confidenceTone(researchCompleteness))}>
+                              Evidence coverage {researchCompleteness}/100
                             </span>
                           ) : null}
                         </div>
                         <p className="text-sm leading-7 text-muted-foreground">
-                          {accountPlan.groundedFallbackBrief?.summary}
+                          {canonicalReport?.grounded_fallback?.summary ?? accountPlan?.groundedFallbackBrief?.summary}
                         </p>
-                        {accountPlan.groundedFallbackBrief?.opportunityHypothesisNote ? (
+                        {(canonicalReport?.grounded_fallback?.opportunity_hypothesis_note ??
+                          accountPlan?.groundedFallbackBrief?.opportunityHypothesisNote) ? (
                           <div className="rounded-3xl border border-border/70 bg-background/75 p-4">
                             <div className="font-medium text-foreground">Opportunity hypotheses</div>
                             <p className="mt-2 text-sm leading-7 text-muted-foreground">
-                              {accountPlan.groundedFallbackBrief.opportunityHypothesisNote}
+                              {canonicalReport?.grounded_fallback?.opportunity_hypothesis_note ??
+                                accountPlan?.groundedFallbackBrief?.opportunityHypothesisNote}
                             </p>
                           </div>
                         ) : null}
                         <EvidencePills
-                          sourceIds={accountPlan.groundedFallbackBrief?.sourceIds ?? researchSummary?.companyIdentity.sourceIds ?? []}
+                          sourceIds={
+                            canonicalReport?.grounded_fallback
+                              ? canonicalCitationSourceIds(canonicalReport.grounded_fallback.citations)
+                              : accountPlan?.groundedFallbackBrief?.sourceIds ?? researchSummary?.companyIdentity.sourceIds ?? []
+                          }
                           sources={document.sources}
                           onSelectSources={handleSelectSources}
                         />
@@ -1033,26 +1211,51 @@ export function ReportExperience({
                     </CardHeader>
                     <CardContent className="space-y-4 text-sm leading-7 text-muted-foreground">
                       <div>
-                        <div className="font-medium text-foreground">
-                          {researchSummary?.companyIdentity.companyName ??
-                            document.report.companyName ??
-                            document.report.canonicalDomain}
+                        <div className="font-medium text-foreground">{companyDisplayName}</div>
+                        <div>
+                          {canonicalReport?.company.archetype ??
+                            researchSummary?.companyIdentity.archetype ??
+                            "Identity resolution pending"}
                         </div>
-                        <div>{researchSummary?.companyIdentity.archetype ?? "Identity resolution pending"}</div>
                       </div>
-                      {researchSummary ? (
+                      {canonicalReport?.executive_summary.summary ? (
+                        <div className="rounded-3xl border border-border/70 bg-background/75 p-4">
+                          <div className="font-medium text-foreground">Executive summary</div>
+                          <p className="mt-2">{canonicalReport.executive_summary.summary}</p>
+                        </div>
+                      ) : null}
+                      {canonicalReport?.company.company_brief ? (
+                        <div className="rounded-3xl border border-border/70 bg-background/75 p-4">
+                          <div className="font-medium text-foreground">Company brief</div>
+                          <p className="mt-2">{canonicalReport.company.company_brief}</p>
+                        </div>
+                      ) : null}
+                      {canonicalReport || researchSummary ? (
                         <div className="grid gap-2 sm:grid-cols-2">
                           <div className="rounded-3xl border border-border/70 bg-background/75 p-3">
                             <div className="font-medium text-foreground">AI maturity</div>
-                            <div className="mt-1">{researchSummary.aiMaturityEstimate.level}</div>
+                            <div className="mt-1">
+                              {canonicalReport?.ai_maturity_signals.maturity_level ?? researchSummary?.aiMaturityEstimate.level}
+                            </div>
                           </div>
                           <div className="rounded-3xl border border-border/70 bg-background/75 p-3">
                             <div className="font-medium text-foreground">Regulatory sensitivity</div>
-                            <div className="mt-1">{researchSummary.regulatorySensitivity.level}</div>
+                            <div className="mt-1">
+                              {canonicalReport?.ai_maturity_signals.regulatory_sensitivity.level ??
+                                researchSummary?.regulatorySensitivity.level}
+                            </div>
                           </div>
                         </div>
                       ) : null}
-                      {researchSummary?.growthPriorities.length ? (
+                      {canonicalReport?.executive_summary ? (
+                        <div className="rounded-3xl border border-border/70 bg-background/75 p-4">
+                          <div className="font-medium text-foreground">Why now</div>
+                          <ul className="mt-2 space-y-2">
+                            <li>• {canonicalReport.executive_summary.why_now}</li>
+                            <li>• {canonicalReport.executive_summary.strategic_takeaway}</li>
+                          </ul>
+                        </div>
+                      ) : researchSummary?.growthPriorities.length ? (
                         <div className="rounded-3xl border border-border/70 bg-background/75 p-4">
                           <div className="font-medium text-foreground">Executive priorities</div>
                           <ul className="mt-2 space-y-2">
@@ -1062,9 +1265,13 @@ export function ReportExperience({
                           </ul>
                         </div>
                       ) : null}
-                      {researchSummary ? (
+                      {canonicalReport || researchSummary ? (
                         <EvidencePills
-                          sourceIds={researchSummary.companyIdentity.sourceIds}
+                          sourceIds={
+                            canonicalReport
+                              ? canonicalCitationSourceIds(canonicalReport.company.citations)
+                              : researchSummary?.companyIdentity.sourceIds ?? []
+                          }
                           sources={document.sources}
                           onSelectSources={handleSelectSources}
                         />
@@ -1080,7 +1287,7 @@ export function ReportExperience({
                   <CardHeader className="space-y-2 p-5">
                     <CardTitle className="text-xl">Brief readiness</CardTitle>
                     <p className="text-sm leading-6 text-foreground/70">
-                      Completed seller-facing sections appear immediately while the rest keep building in the background.
+                      This quick map stays secondary while the report is finishing. Sections appear here once the saved brief has usable evidence.
                     </p>
                   </CardHeader>
                   <CardContent className="grid gap-2.5 p-5 pt-0 sm:grid-cols-2 xl:grid-cols-4">
@@ -1113,7 +1320,8 @@ export function ReportExperience({
                 </Card>
               ) : null}
 
-              {accountPlan && !isGroundedFallbackBrief ? (
+              {((canonicalReport && !isGroundedFallbackBrief && canonicalTopOpportunities.length > 0) ||
+                (!canonicalReport && accountPlan && !isGroundedFallbackBrief)) ? (
                 <ReportSection
                   id="use-cases"
                   eyebrow="Brief"
@@ -1122,38 +1330,42 @@ export function ReportExperience({
                 >
                   <div className="space-y-4">
                     <div className="grid gap-4 lg:grid-cols-3">
-                      {accountPlan.topUseCases.map((useCase) => (
-                        <Card key={`top-${useCase.workflowName}`} className="border-strong/70 bg-card/85 shadow-panel">
-                          <CardHeader className="space-y-3">
-                            <div className="flex items-center justify-between gap-3">
-                              <Badge variant="secondary" className="rounded-full px-3 py-1">
-                                Top {useCase.priorityRank}
-                              </Badge>
-                              <Badge variant="outline" className="rounded-full px-3 py-1">
-                                {useCase.scorecard.priorityScore}
-                              </Badge>
-                            </div>
-                            <CardTitle className="text-xl">{useCase.workflowName}</CardTitle>
-                            <p className="text-sm text-muted-foreground">{formatDepartmentLabel(useCase.department)}</p>
-                          </CardHeader>
-                          <CardContent className="space-y-4 text-sm leading-7 text-muted-foreground">
-                            <p>{useCase.summary}</p>
-                            <div className="rounded-3xl border border-border/70 bg-background/70 p-4">
-                              <div className="font-medium text-foreground">Expected outcome</div>
-                              <p className="mt-2">{useCase.expectedOutcome}</p>
-                            </div>
-                            <div className="rounded-3xl border border-border/70 bg-background/70 p-4">
-                              <div className="font-medium text-foreground">Why now</div>
-                              <p className="mt-2">{useCase.whyNow}</p>
-                            </div>
-                            <EvidencePills
-                              sourceIds={useCase.evidenceSourceIds}
-                              sources={document.sources}
-                              onSelectSources={handleSelectSources}
-                            />
-                          </CardContent>
-                        </Card>
-                      ))}
+                      {(canonicalReport ? canonicalTopOpportunities.slice(0, 3) : accountPlan?.topUseCases ?? []).map((useCase) => {
+                        const item = getRenderableOpportunity(useCase);
+
+                        return (
+                          <Card key={`top-${item.key}`} className="border-strong/70 bg-card/85 shadow-panel">
+                            <CardHeader className="space-y-3">
+                              <div className="flex items-center justify-between gap-3">
+                                <Badge variant="secondary" className="rounded-full px-3 py-1">
+                                  Top {item.priorityRank}
+                                </Badge>
+                                <Badge variant="outline" className="rounded-full px-3 py-1">
+                                  {item.scorecard.priorityScore}
+                                </Badge>
+                              </div>
+                              <CardTitle className="text-xl">{item.workflowName}</CardTitle>
+                              <p className="text-sm text-muted-foreground">{formatDepartmentLabel(item.department)}</p>
+                            </CardHeader>
+                            <CardContent className="space-y-4 text-sm leading-7 text-muted-foreground">
+                              <p>{item.summary}</p>
+                              <div className="rounded-3xl border border-border/70 bg-background/70 p-4">
+                                <div className="font-medium text-foreground">Expected outcome</div>
+                                <p className="mt-2">{item.expectedOutcome}</p>
+                              </div>
+                              <div className="rounded-3xl border border-border/70 bg-background/70 p-4">
+                                <div className="font-medium text-foreground">Why now</div>
+                                <p className="mt-2">{item.whyNow}</p>
+                              </div>
+                              <EvidencePills
+                                sourceIds={item.sourceIds}
+                                sources={document.sources}
+                                onSelectSources={handleSelectSources}
+                              />
+                            </CardContent>
+                          </Card>
+                        );
+                      })}
                     </div>
 
                     {remainingUseCases.length > 0 ? (
@@ -1162,133 +1374,137 @@ export function ReportExperience({
                           View all use cases
                         </summary>
                         <div className="mt-4 grid gap-4 xl:grid-cols-2">
-                          {remainingUseCases.map((useCase) => (
-                            <Card key={useCase.workflowName} className="border-strong/70 bg-card/80 shadow-none">
-                              <CardHeader className="space-y-3">
-                                <div className="flex flex-wrap items-center justify-between gap-3">
-                                  <div className="space-y-1">
-                                    <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">
-                                      Rank {useCase.priorityRank} · {formatDepartmentLabel(useCase.department)}
-                                    </div>
-                                    <CardTitle className="text-xl">{useCase.workflowName}</CardTitle>
-                                  </div>
-                                  <div className="flex flex-wrap gap-2">
-                                    <Badge variant="secondary" className="rounded-full px-3 py-1">
-                                      {formatMotionLabel(useCase.recommendedMotion)}
-                                    </Badge>
-                                    <Badge variant="outline" className="rounded-full px-3 py-1">
-                                      {useCase.scorecard.priorityScore}
-                                    </Badge>
-                                  </div>
-                                </div>
-                              </CardHeader>
-                              <CardContent className="space-y-4 text-sm leading-7 text-muted-foreground">
-                                <p>{useCase.summary}</p>
-                                <div className="grid gap-3 sm:grid-cols-2">
-                                  <div className="rounded-3xl border border-border/70 bg-background/70 p-4">
-                                    <div className="font-medium text-foreground">Pain point</div>
-                                    <p className="mt-2">{useCase.painPoint}</p>
-                                  </div>
-                                  <div className="rounded-3xl border border-border/70 bg-background/70 p-4">
-                                    <div className="font-medium text-foreground">Why now</div>
-                                    <p className="mt-2">{useCase.whyNow}</p>
-                                  </div>
-                                </div>
+                          {remainingUseCases.map((useCase) => {
+                            const item = getRenderableOpportunity(useCase);
 
-                                <div className="rounded-3xl border border-border/70 bg-background/70 p-4">
-                                  <div className="font-medium text-foreground">Expected outcome</div>
-                                  <p className="mt-2">{useCase.expectedOutcome}</p>
-                                </div>
-
-                                <div className="grid gap-3 sm:grid-cols-2">
-                                  <div className="rounded-3xl border border-border/70 bg-background/70 p-4">
-                                    <div className="font-medium text-foreground">Likely users</div>
-                                    <ul className="mt-2 space-y-1">
-                                      {useCase.likelyUsers.map((item) => (
-                                        <li key={item}>• {item}</li>
-                                      ))}
-                                    </ul>
-                                  </div>
-                                  <div className="rounded-3xl border border-border/70 bg-background/70 p-4">
-                                    <div className="font-medium text-foreground">Metrics</div>
-                                    <ul className="mt-2 space-y-1">
-                                      {useCase.metrics.map((item) => (
-                                        <li key={item}>• {item}</li>
-                                      ))}
-                                    </ul>
-                                  </div>
-                                </div>
-
-                                <div className="grid gap-3 sm:grid-cols-2">
-                                  <div className="rounded-3xl border border-border/70 bg-background/70 p-4">
-                                    <div className="font-medium text-foreground">Dependencies</div>
-                                    {useCase.dependencies.length > 0 ? (
-                                      <ul className="mt-2 space-y-1">
-                                        {useCase.dependencies.map((item) => (
-                                          <li key={item}>• {item}</li>
-                                        ))}
-                                      </ul>
-                                    ) : (
-                                      <p className="mt-2">No major dependencies identified in public evidence.</p>
-                                    )}
-                                  </div>
-                                  <div className="rounded-3xl border border-border/70 bg-background/70 p-4">
-                                    <div className="font-medium text-foreground">Security and compliance notes</div>
-                                    {useCase.securityComplianceNotes.length > 0 ? (
-                                      <ul className="mt-2 space-y-1">
-                                        {useCase.securityComplianceNotes.map((item) => (
-                                          <li key={item}>• {item}</li>
-                                        ))}
-                                      </ul>
-                                    ) : (
-                                      <p className="mt-2">No additional notes were supported by public evidence.</p>
-                                    )}
-                                  </div>
-                                </div>
-
-                                <div className="rounded-3xl border border-border/70 bg-background/70 p-4">
-                                  <div className="font-medium text-foreground">Motion rationale</div>
-                                  <p className="mt-2">{useCase.motionRationale}</p>
-                                </div>
-
-                                <div className="rounded-3xl border border-border/70 bg-background/70 p-4">
-                                  <div className="font-medium text-foreground">Score breakdown</div>
-                                  <div className="mt-3 grid gap-2 sm:grid-cols-2">
-                                    {[
-                                      ["Business value", useCase.scorecard.businessValue],
-                                      ["Deployment readiness", useCase.scorecard.deploymentReadiness],
-                                      ["Expansion potential", useCase.scorecard.expansionPotential],
-                                      ["OpenAI fit", useCase.scorecard.openaiFit],
-                                      ["Sponsor likelihood", useCase.scorecard.sponsorLikelihood],
-                                      ["Evidence confidence", useCase.scorecard.evidenceConfidence],
-                                      ["Risk penalty", useCase.scorecard.riskPenalty],
-                                      ["Priority score", useCase.scorecard.priorityScore],
-                                    ].map(([label, value]) => (
-                                      <div key={label} className="rounded-2xl border border-border/70 bg-card px-3 py-2">
-                                        <div className="text-xs uppercase tracking-[0.18em] text-muted-foreground">{label}</div>
-                                        <div className="mt-1 font-medium text-foreground">{value}</div>
+                            return (
+                              <Card key={item.key} className="border-strong/70 bg-card/80 shadow-none">
+                                <CardHeader className="space-y-3">
+                                  <div className="flex flex-wrap items-center justify-between gap-3">
+                                    <div className="space-y-1">
+                                      <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">
+                                        Rank {item.priorityRank} · {formatDepartmentLabel(item.department)}
                                       </div>
-                                    ))}
+                                      <CardTitle className="text-xl">{item.workflowName}</CardTitle>
+                                    </div>
+                                    <div className="flex flex-wrap gap-2">
+                                      <Badge variant="secondary" className="rounded-full px-3 py-1">
+                                        {formatMotionLabel(item.recommendedMotion)}
+                                      </Badge>
+                                      <Badge variant="outline" className="rounded-full px-3 py-1">
+                                        {item.scorecard.priorityScore}
+                                      </Badge>
+                                    </div>
                                   </div>
-                                </div>
+                                </CardHeader>
+                                <CardContent className="space-y-4 text-sm leading-7 text-muted-foreground">
+                                  <p>{item.summary}</p>
+                                  <div className="grid gap-3 sm:grid-cols-2">
+                                    <div className="rounded-3xl border border-border/70 bg-background/70 p-4">
+                                      <div className="font-medium text-foreground">Pain point</div>
+                                      <p className="mt-2">{item.painPoint}</p>
+                                    </div>
+                                    <div className="rounded-3xl border border-border/70 bg-background/70 p-4">
+                                      <div className="font-medium text-foreground">Why now</div>
+                                      <p className="mt-2">{item.whyNow}</p>
+                                    </div>
+                                  </div>
 
-                                <div className="rounded-3xl border border-border/70 bg-background/70 p-4">
-                                  <div className="font-medium text-foreground">Open questions</div>
-                                  <ul className="mt-2 space-y-1">
-                                    {useCase.openQuestions.map((item) => (
-                                      <li key={item}>• {item}</li>
-                                    ))}
-                                  </ul>
-                                </div>
+                                  <div className="rounded-3xl border border-border/70 bg-background/70 p-4">
+                                    <div className="font-medium text-foreground">Expected outcome</div>
+                                    <p className="mt-2">{item.expectedOutcome}</p>
+                                  </div>
 
-                                <EvidencePills
-                                  sourceIds={useCase.evidenceSourceIds}
-                                  sources={document.sources}
-                                  onSelectSources={handleSelectSources}
-                                />
-                              </CardContent>
-                            </Card>
-                          ))}
+                                  <div className="grid gap-3 sm:grid-cols-2">
+                                    <div className="rounded-3xl border border-border/70 bg-background/70 p-4">
+                                      <div className="font-medium text-foreground">Likely users</div>
+                                      <ul className="mt-2 space-y-1">
+                                        {item.likelyUsers.map((value) => (
+                                          <li key={value}>• {value}</li>
+                                        ))}
+                                      </ul>
+                                    </div>
+                                    <div className="rounded-3xl border border-border/70 bg-background/70 p-4">
+                                      <div className="font-medium text-foreground">Metrics</div>
+                                      <ul className="mt-2 space-y-1">
+                                        {item.metrics.map((value) => (
+                                          <li key={value}>• {value}</li>
+                                        ))}
+                                      </ul>
+                                    </div>
+                                  </div>
+
+                                  <div className="grid gap-3 sm:grid-cols-2">
+                                    <div className="rounded-3xl border border-border/70 bg-background/70 p-4">
+                                      <div className="font-medium text-foreground">Dependencies</div>
+                                      {item.dependencies.length > 0 ? (
+                                        <ul className="mt-2 space-y-1">
+                                          {item.dependencies.map((value) => (
+                                            <li key={value}>• {value}</li>
+                                          ))}
+                                        </ul>
+                                      ) : (
+                                        <p className="mt-2">No major dependencies identified in public evidence.</p>
+                                      )}
+                                    </div>
+                                    <div className="rounded-3xl border border-border/70 bg-background/70 p-4">
+                                      <div className="font-medium text-foreground">Security and compliance notes</div>
+                                      {item.securityComplianceNotes.length > 0 ? (
+                                        <ul className="mt-2 space-y-1">
+                                          {item.securityComplianceNotes.map((value) => (
+                                            <li key={value}>• {value}</li>
+                                          ))}
+                                        </ul>
+                                      ) : (
+                                        <p className="mt-2">No additional notes were supported by public evidence.</p>
+                                      )}
+                                    </div>
+                                  </div>
+
+                                  <div className="rounded-3xl border border-border/70 bg-background/70 p-4">
+                                    <div className="font-medium text-foreground">Motion rationale</div>
+                                    <p className="mt-2">{item.motionRationale}</p>
+                                  </div>
+
+                                  <div className="rounded-3xl border border-border/70 bg-background/70 p-4">
+                                    <div className="font-medium text-foreground">Score breakdown</div>
+                                    <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                                      {[
+                                        ["Business value", item.scorecard.businessValue],
+                                        ["Deployment readiness", item.scorecard.deploymentReadiness],
+                                        ["Expansion potential", item.scorecard.expansionPotential],
+                                        ["OpenAI fit", item.scorecard.openaiFit],
+                                        ["Sponsor likelihood", item.scorecard.sponsorLikelihood],
+                                        ["Evidence confidence", item.scorecard.evidenceConfidence],
+                                        ["Risk penalty", item.scorecard.riskPenalty],
+                                        ["Priority score", item.scorecard.priorityScore],
+                                      ].map(([label, value]) => (
+                                        <div key={label} className="rounded-2xl border border-border/70 bg-card px-3 py-2">
+                                          <div className="text-xs uppercase tracking-[0.18em] text-muted-foreground">{label}</div>
+                                          <div className="mt-1 font-medium text-foreground">{value}</div>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  </div>
+
+                                  <div className="rounded-3xl border border-border/70 bg-background/70 p-4">
+                                    <div className="font-medium text-foreground">Open questions</div>
+                                    <ul className="mt-2 space-y-1">
+                                      {item.openQuestions.map((value) => (
+                                        <li key={value}>• {value}</li>
+                                      ))}
+                                    </ul>
+                                  </div>
+
+                                  <EvidencePills
+                                    sourceIds={item.sourceIds}
+                                    sources={document.sources}
+                                    onSelectSources={handleSelectSources}
+                                  />
+                                </CardContent>
+                              </Card>
+                            );
+                          })}
                         </div>
                       </details>
                     ) : null}
@@ -1296,7 +1512,8 @@ export function ReportExperience({
                 </ReportSection>
               ) : null}
 
-              {accountPlan && isGroundedFallbackBrief && accountPlan.candidateUseCases.length > 0 ? (
+              {((canonicalReport && isGroundedFallbackBrief && canonicalTopOpportunities.length > 0) ||
+                (!canonicalReport && accountPlan && isGroundedFallbackBrief && accountPlan.candidateUseCases.length > 0)) ? (
                 <ReportSection
                   id="use-cases"
                   eyebrow="Brief"
@@ -1304,43 +1521,48 @@ export function ReportExperience({
                   description="These hypotheses cleared the minimum grounding bar, but they remain lower-confidence than a normal prioritized opportunity set."
                 >
                   <div className="grid gap-4 lg:grid-cols-3">
-                    {accountPlan.candidateUseCases.map((useCase) => (
-                      <Card key={`hypothesis-${useCase.workflowName}`} className="border-strong/70 bg-card/80 shadow-none">
-                        <CardHeader className="space-y-3">
-                          <div className="flex items-center justify-between gap-3">
-                            <Badge variant="secondary" className="rounded-full px-3 py-1">
-                              Hypothesis
-                            </Badge>
-                            <Badge variant="outline" className="rounded-full px-3 py-1">
-                              {useCase.scorecard.evidenceConfidence}/100 evidence
-                            </Badge>
-                          </div>
-                          <CardTitle className="text-xl">{useCase.workflowName}</CardTitle>
-                          <p className="text-sm text-muted-foreground">{formatDepartmentLabel(useCase.department)}</p>
-                        </CardHeader>
-                        <CardContent className="space-y-4 text-sm leading-7 text-muted-foreground">
-                          <p>{useCase.summary}</p>
-                          <div className="rounded-3xl border border-border/70 bg-background/70 p-4">
-                            <div className="font-medium text-foreground">Why it may matter</div>
-                            <p className="mt-2">{useCase.whyNow}</p>
-                          </div>
-                          <div className="rounded-3xl border border-border/70 bg-background/70 p-4">
-                            <div className="font-medium text-foreground">Potential outcome</div>
-                            <p className="mt-2">{useCase.expectedOutcome}</p>
-                          </div>
-                          <EvidencePills
-                            sourceIds={useCase.evidenceSourceIds}
-                            sources={document.sources}
-                            onSelectSources={handleSelectSources}
-                          />
-                        </CardContent>
-                      </Card>
-                    ))}
+                    {(canonicalReport ? canonicalTopOpportunities : accountPlan?.candidateUseCases ?? []).map((useCase) => {
+                      const item = getRenderableOpportunity(useCase);
+
+                      return (
+                        <Card key={`hypothesis-${item.key}`} className="border-strong/70 bg-card/80 shadow-none">
+                          <CardHeader className="space-y-3">
+                            <div className="flex items-center justify-between gap-3">
+                              <Badge variant="secondary" className="rounded-full px-3 py-1">
+                                Hypothesis
+                              </Badge>
+                              <Badge variant="outline" className="rounded-full px-3 py-1">
+                                {item.scorecard.evidenceConfidence}/100 evidence
+                              </Badge>
+                            </div>
+                            <CardTitle className="text-xl">{item.workflowName}</CardTitle>
+                            <p className="text-sm text-muted-foreground">{formatDepartmentLabel(item.department)}</p>
+                          </CardHeader>
+                          <CardContent className="space-y-4 text-sm leading-7 text-muted-foreground">
+                            <p>{item.summary}</p>
+                            <div className="rounded-3xl border border-border/70 bg-background/70 p-4">
+                              <div className="font-medium text-foreground">Why it may matter</div>
+                              <p className="mt-2">{item.whyNow}</p>
+                            </div>
+                            <div className="rounded-3xl border border-border/70 bg-background/70 p-4">
+                              <div className="font-medium text-foreground">Potential outcome</div>
+                              <p className="mt-2">{item.expectedOutcome}</p>
+                            </div>
+                            <EvidencePills
+                              sourceIds={item.sourceIds}
+                              sources={document.sources}
+                              onSelectSources={handleSelectSources}
+                            />
+                          </CardContent>
+                        </Card>
+                      );
+                    })}
                   </div>
                 </ReportSection>
               ) : null}
 
-              {accountPlan && (accountPlan.stakeholderHypotheses.length > 0 || hasDiscoveryContent) ? (
+              {((canonicalReport && (stakeholderHypotheses.length > 0 || hasDiscoveryContent)) ||
+                (!canonicalReport && accountPlan && (accountPlan.stakeholderHypotheses.length > 0 || hasDiscoveryContent))) ? (
                 <ReportSection
                   id="stakeholders"
                   eyebrow="Brief"
@@ -1348,80 +1570,92 @@ export function ReportExperience({
                   description="Use these stakeholder hypotheses, objections, and discovery prompts to shape the deal."
                 >
                   <div className="space-y-4">
-                    {accountPlan.stakeholderHypotheses.length > 0 ? (
+                    {stakeholderHypotheses.length > 0 ? (
                       <div className="grid gap-4 xl:grid-cols-3">
-                        {accountPlan.stakeholderHypotheses.map((stakeholder) => (
-                          <Card
-                            key={`${stakeholder.likelyRole}-${stakeholder.hypothesis}`}
-                            className="border-strong/70 bg-card/80 shadow-none"
-                          >
-                            <CardHeader className="space-y-2">
-                              <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">
-                                {stakeholder.department ?? "Cross-functional"}
-                              </div>
-                              <CardTitle className="text-xl">{stakeholder.likelyRole}</CardTitle>
-                            </CardHeader>
-                            <CardContent className="space-y-3 text-sm leading-7 text-muted-foreground">
-                              <p>{stakeholder.hypothesis}</p>
-                              <p>{stakeholder.rationale}</p>
-                              <Badge variant="outline" className="rounded-full px-3 py-1">
-                                {stakeholder.confidence}/100 confidence
-                              </Badge>
-                              <EvidencePills
-                                sourceIds={stakeholder.evidenceSourceIds}
-                                sources={document.sources}
-                                onSelectSources={handleSelectSources}
-                              />
-                            </CardContent>
-                          </Card>
-                        ))}
+                        {stakeholderHypotheses.map((stakeholder) => {
+                          const item = getRenderableStakeholder(stakeholder);
+
+                          return (
+                            <Card
+                              key={`${item.likelyRole}-${item.hypothesis}`}
+                              className="border-strong/70 bg-card/80 shadow-none"
+                            >
+                              <CardHeader className="space-y-2">
+                                <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">
+                                  {item.department ?? "Cross-functional"}
+                                </div>
+                                <CardTitle className="text-xl">{item.likelyRole}</CardTitle>
+                              </CardHeader>
+                              <CardContent className="space-y-3 text-sm leading-7 text-muted-foreground">
+                                <p>{item.hypothesis}</p>
+                                <p>{item.rationale}</p>
+                                <Badge variant="outline" className="rounded-full px-3 py-1">
+                                  {item.confidence}/100 confidence
+                                </Badge>
+                                <EvidencePills
+                                  sourceIds={item.sourceIds}
+                                  sources={document.sources}
+                                  onSelectSources={handleSelectSources}
+                                />
+                              </CardContent>
+                            </Card>
+                          );
+                        })}
                       </div>
                     ) : null}
 
                     {hasDiscoveryContent ? (
                       <div className="grid gap-4 lg:grid-cols-2">
-                        {accountPlan.objectionsAndRebuttals.length > 0 ? (
+                        {objections.length > 0 ? (
                           <Card className="border-strong/70 bg-card/80 shadow-none">
                             <CardHeader>
                               <CardTitle className="text-xl">Likely objections</CardTitle>
                             </CardHeader>
                             <CardContent className="space-y-4">
-                              {accountPlan.objectionsAndRebuttals.map((item) => (
-                                <div key={item.objection} className="rounded-3xl border border-border/70 bg-background/70 p-4">
-                                  <div className="font-medium text-foreground">{item.objection}</div>
-                                  <p className="mt-2 text-sm leading-7 text-muted-foreground">{item.rebuttal}</p>
-                                  <div className="mt-3">
-                                    <EvidencePills
-                                      sourceIds={item.evidenceSourceIds}
-                                      sources={document.sources}
-                                      onSelectSources={handleSelectSources}
-                                    />
+                              {objections.map((item) => {
+                                const objection = getRenderableObjection(item);
+
+                                return (
+                                  <div key={objection.key} className="rounded-3xl border border-border/70 bg-background/70 p-4">
+                                    <div className="font-medium text-foreground">{objection.objection}</div>
+                                    <p className="mt-2 text-sm leading-7 text-muted-foreground">{objection.rebuttal}</p>
+                                    <div className="mt-3">
+                                      <EvidencePills
+                                        sourceIds={objection.sourceIds}
+                                        sources={document.sources}
+                                        onSelectSources={handleSelectSources}
+                                      />
+                                    </div>
                                   </div>
-                                </div>
-                              ))}
+                                );
+                              })}
                             </CardContent>
                           </Card>
                         ) : null}
 
-                        {accountPlan.discoveryQuestions.length > 0 ? (
+                        {discoveryQuestions.length > 0 ? (
                           <Card className="border-strong/70 bg-card/80 shadow-none">
                             <CardHeader>
                               <CardTitle className="text-xl">Discovery questions</CardTitle>
                             </CardHeader>
                             <CardContent className="space-y-4">
-                              {accountPlan.discoveryQuestions.map((item) => (
-                                <div key={item.question} className="rounded-3xl border border-border/70 bg-background/70 p-4">
-                                  <div className="font-medium text-foreground">{item.question}</div>
-                                  <p className="mt-2 text-sm leading-7 text-muted-foreground">{item.whyItMatters}</p>
-                                  <div className="mt-3">
-                                    <EvidencePills
-                                      sourceIds={item.evidenceSourceIds}
-                                      sources={document.sources}
-                                      onSelectSources={handleSelectSources}
-                                    />
+                              {discoveryQuestions.map((item) => {
+                                const question = getRenderableDiscoveryQuestion(item);
+
+                                return (
+                                  <div key={question.key} className="rounded-3xl border border-border/70 bg-background/70 p-4">
+                                    <div className="font-medium text-foreground">{question.question}</div>
+                                    <p className="mt-2 text-sm leading-7 text-muted-foreground">{question.whyItMatters}</p>
+                                    <div className="mt-3">
+                                      <EvidencePills
+                                        sourceIds={question.sourceIds}
+                                        sources={document.sources}
+                                        onSelectSources={handleSelectSources}
+                                      />
+                                    </div>
                                   </div>
-                                </div>
-                              ))}
+                                );
+                              })}
                             </CardContent>
                           </Card>
                         ) : null}
@@ -1431,7 +1665,7 @@ export function ReportExperience({
                 </ReportSection>
               ) : null}
 
-              {accountPlan?.pilotPlan ? (
+              {pilotPlan ? (
                 <ReportSection
                   id="pilot-plan"
                   eyebrow="Brief"
@@ -1444,7 +1678,9 @@ export function ReportExperience({
                         <div className="flex flex-wrap items-center justify-between gap-3">
                             <CardTitle className="text-2xl">Pilot recommendation</CardTitle>
                           <Badge variant="secondary" className="rounded-full px-3 py-1">
-                            {formatMotionLabel(accountPlan.pilotPlan.recommendedMotion)}
+                            {formatMotionLabel(
+                              "recommended_motion" in pilotPlan ? pilotPlan.recommended_motion : pilotPlan.recommendedMotion,
+                            )}
                           </Badge>
                         </div>
                       </CardHeader>
@@ -1452,14 +1688,18 @@ export function ReportExperience({
                         <div className="space-y-4">
                           <div className="rounded-3xl border border-border/70 bg-background/70 p-4">
                             <div className="font-medium text-foreground">Objective</div>
-                            <p className="mt-2 text-sm leading-7 text-muted-foreground">{accountPlan.pilotPlan.objective}</p>
+                            <p className="mt-2 text-sm leading-7 text-muted-foreground">{pilotPlan.objective}</p>
                           </div>
                           <div className="rounded-3xl border border-border/70 bg-background/70 p-4">
                             <div className="font-medium text-foreground">Scope</div>
-                            <p className="mt-2 text-sm leading-7 text-muted-foreground">{accountPlan.pilotPlan.scope}</p>
+                            <p className="mt-2 text-sm leading-7 text-muted-foreground">{pilotPlan.scope}</p>
                           </div>
                           <EvidencePills
-                            sourceIds={accountPlan.pilotPlan.evidenceSourceIds}
+                            sourceIds={
+                              "citations" in pilotPlan
+                                ? canonicalCitationSourceIds(pilotPlan.citations)
+                                : pilotPlan.evidenceSourceIds
+                            }
                             sources={document.sources}
                             onSelectSources={handleSelectSources}
                           />
@@ -1468,7 +1708,7 @@ export function ReportExperience({
                           <div className="rounded-3xl border border-border/70 bg-background/70 p-4">
                             <div className="font-medium text-foreground">Success metrics</div>
                             <ul className="mt-2 space-y-1 text-sm leading-7 text-muted-foreground">
-                              {accountPlan.pilotPlan.successMetrics.map((item) => (
+                              {("success_metrics" in pilotPlan ? pilotPlan.success_metrics : pilotPlan.successMetrics).map((item) => (
                                 <li key={item}>• {item}</li>
                               ))}
                             </ul>
@@ -1476,7 +1716,7 @@ export function ReportExperience({
                           <div className="rounded-3xl border border-border/70 bg-background/70 p-4">
                             <div className="font-medium text-foreground">Dependencies</div>
                             <ul className="mt-2 space-y-1 text-sm leading-7 text-muted-foreground">
-                              {accountPlan.pilotPlan.dependencies.map((item) => (
+                              {pilotPlan.dependencies.map((item) => (
                                 <li key={item}>• {item}</li>
                               ))}
                             </ul>
@@ -1484,7 +1724,7 @@ export function ReportExperience({
                           <div className="rounded-3xl border border-border/70 bg-background/70 p-4">
                             <div className="font-medium text-foreground">Risks</div>
                             <ul className="mt-2 space-y-1 text-sm leading-7 text-muted-foreground">
-                              {accountPlan.pilotPlan.risks.map((item) => (
+                              {pilotPlan.risks.map((item) => (
                                 <li key={item}>• {item}</li>
                               ))}
                             </ul>
@@ -1494,7 +1734,7 @@ export function ReportExperience({
                     </Card>
 
                     <div className="grid gap-4 xl:grid-cols-3">
-                      {accountPlan.pilotPlan.phases.map((phase) => (
+                      {pilotPlan.phases.map((phase) => (
                         <Card key={phase.name} className="border-strong/70 bg-card/80 shadow-none">
                           <CardHeader className="space-y-2">
                             <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">{phase.duration}</div>
@@ -1525,7 +1765,7 @@ export function ReportExperience({
                 </ReportSection>
               ) : null}
 
-              {accountPlan && hasExpansionContent ? (
+              {(canonicalReport || accountPlan) && hasExpansionContent ? (
                 <details
                   id="expansion-scenarios"
                   open={isExpansionOpen}
@@ -1544,9 +1784,9 @@ export function ReportExperience({
                   <div className="border-t border-border/70 p-6 pt-6">
                     <div className="grid gap-4 xl:grid-cols-3">
                       {[
-                        { label: "Low case", scenario: accountPlan.expansionScenarios.low },
-                        { label: "Base case", scenario: accountPlan.expansionScenarios.base },
-                        { label: "High case", scenario: accountPlan.expansionScenarios.high },
+                        { label: "Low case", scenario: expansionScenarios.low },
+                        { label: "Base case", scenario: expansionScenarios.base },
+                        { label: "High case", scenario: expansionScenarios.high },
                       ]
                         .filter(
                           (item): item is { label: string; scenario: NonNullable<typeof item.scenario> } =>
@@ -1570,13 +1810,17 @@ export function ReportExperience({
                             <div className="rounded-3xl border border-border/70 bg-background/70 p-4">
                               <div className="font-medium text-foreground">Expected outcomes</div>
                               <ul className="mt-2 space-y-1">
-                                {scenario.expectedOutcomes.map((item) => (
+                                {("expected_outcomes" in scenario ? scenario.expected_outcomes : scenario.expectedOutcomes).map((item) => (
                                   <li key={item}>• {item}</li>
                                 ))}
                               </ul>
                             </div>
                             <EvidencePills
-                              sourceIds={scenario.evidenceSourceIds}
+                              sourceIds={
+                                "citations" in scenario
+                                  ? canonicalCitationSourceIds(scenario.citations)
+                                  : scenario.evidenceSourceIds
+                              }
                               sources={document.sources}
                               onSelectSources={handleSelectSources}
                             />
@@ -1598,7 +1842,121 @@ export function ReportExperience({
                 title="Research"
                 description="Research detail, fact classification, and citation traceability live here."
               >
-                {researchSummary ? (
+                {canonicalReport ? (
+                  <div className="grid items-start gap-4 lg:grid-cols-2">
+                    <Card className="min-w-0 overflow-hidden border-strong/70 bg-card/80 shadow-none">
+                      <CardHeader>
+                        <CardTitle className="text-xl">Executive summary</CardTitle>
+                      </CardHeader>
+                      <CardContent className="min-w-0 space-y-4">
+                        <div className="min-w-0 overflow-hidden rounded-3xl border border-border/70 bg-background/70 p-4">
+                          <p className="text-sm leading-7 text-muted-foreground">{canonicalReport.executive_summary.summary}</p>
+                          <div className="mt-3 min-w-0">
+                            <EvidencePills
+                              sourceIds={canonicalCitationSourceIds(canonicalReport.executive_summary.citations)}
+                              sources={document.sources}
+                              onSelectSources={handleSelectSources}
+                            />
+                          </div>
+                        </div>
+                        <div className="min-w-0 overflow-hidden rounded-3xl border border-border/70 bg-background/70 p-4">
+                          <div className="font-medium text-foreground">Why now</div>
+                          <p className="mt-2 text-sm leading-7 text-muted-foreground">{canonicalReport.executive_summary.why_now}</p>
+                        </div>
+                        <div className="min-w-0 overflow-hidden rounded-3xl border border-border/70 bg-background/70 p-4">
+                          <div className="font-medium text-foreground">Strategic takeaway</div>
+                          <p className="mt-2 text-sm leading-7 text-muted-foreground">
+                            {canonicalReport.executive_summary.strategic_takeaway}
+                          </p>
+                        </div>
+                      </CardContent>
+                    </Card>
+
+                    <Card className="min-w-0 overflow-hidden border-strong/70 bg-card/80 shadow-none">
+                      <CardHeader>
+                        <CardTitle className="text-xl">Signal summary</CardTitle>
+                      </CardHeader>
+                      <CardContent className="grid min-w-0 gap-4">
+                        {[
+                          {
+                            label: "AI maturity",
+                            value: `${canonicalReport.ai_maturity_signals.maturity_level}: ${canonicalReport.ai_maturity_signals.maturity_summary}`,
+                            sourceIds: canonicalCitationSourceIds(canonicalReport.ai_maturity_signals.citations),
+                          },
+                          {
+                            label: "Regulatory sensitivity",
+                            value: `${canonicalReport.ai_maturity_signals.regulatory_sensitivity.level}: ${canonicalReport.ai_maturity_signals.regulatory_sensitivity.rationale}`,
+                            sourceIds: canonicalCitationSourceIds(canonicalReport.ai_maturity_signals.regulatory_sensitivity.citations),
+                          },
+                        ].map((item) => (
+                          <div
+                            key={item.label}
+                            className="min-w-0 overflow-hidden rounded-3xl border border-border/70 bg-background/70 p-4"
+                          >
+                            <div className="font-medium text-foreground">{item.label}</div>
+                            <p className="mt-2 text-sm leading-7 text-muted-foreground">{item.value}</p>
+                            <div className="mt-3 min-w-0">
+                              <EvidencePills
+                                sourceIds={item.sourceIds}
+                                sources={document.sources}
+                                onSelectSources={handleSelectSources}
+                              />
+                            </div>
+                          </div>
+                        ))}
+                      </CardContent>
+                    </Card>
+
+                    <Card className="min-w-0 overflow-hidden border-strong/70 bg-card/80 shadow-none">
+                      <CardHeader>
+                        <CardTitle className="text-xl">Company brief</CardTitle>
+                      </CardHeader>
+                      <CardContent className="min-w-0 space-y-4">
+                        <div className="min-w-0 overflow-hidden rounded-3xl border border-border/70 bg-background/70 p-4">
+                          <p className="text-sm leading-7 text-muted-foreground">{canonicalReport.company.company_brief}</p>
+                          <div className="mt-3 min-w-0">
+                            <EvidencePills
+                              sourceIds={canonicalCitationSourceIds(canonicalReport.company.citations)}
+                              sources={document.sources}
+                              onSelectSources={handleSelectSources}
+                            />
+                          </div>
+                        </div>
+                      </CardContent>
+                    </Card>
+
+                    <Card className="min-w-0 overflow-hidden border-strong/70 bg-card/80 shadow-none">
+                      <CardHeader>
+                        <CardTitle className="text-xl">Notable signals</CardTitle>
+                      </CardHeader>
+                      <CardContent className="min-w-0 space-y-4">
+                        {canonicalReport.ai_maturity_signals.notable_signals.length > 0 ? (
+                          canonicalReport.ai_maturity_signals.notable_signals.map((item, index) => (
+                            <div
+                              key={`${item.summary}-${index}`}
+                              className="min-w-0 overflow-hidden rounded-3xl border border-border/70 bg-background/70 p-4"
+                            >
+                              <p className="text-sm leading-7 text-muted-foreground">{item.summary}</p>
+                              <div className="mt-3 min-w-0">
+                                <EvidencePills
+                                  sourceIds={canonicalCitationSourceIds(item.citations)}
+                                  sources={document.sources}
+                                  onSelectSources={handleSelectSources}
+                                />
+                              </div>
+                            </div>
+                          ))
+                        ) : (
+                          <EmptySection
+                            title="Notable signals not established yet"
+                            description="Available public evidence did not support additional notable signals beyond the core brief."
+                            compact={isBuildingReport}
+                          />
+                        )}
+                      </CardContent>
+                    </Card>
+                  </div>
+                ) : researchSummary ? (
                   <div className="grid items-start gap-4 lg:grid-cols-2">
                     {researchSummary.growthPriorities.length > 0 || !isBuildingReport ? (
                       <Card className="min-w-0 overflow-hidden border-strong/70 bg-card/80 shadow-none">
@@ -1722,7 +2080,42 @@ export function ReportExperience({
                     <CardTitle className="text-2xl">Fact base</CardTitle>
                   </CardHeader>
                   <CardContent className="min-w-0 space-y-4">
-                    {document.facts.length > 0 ? (
+                    {canonicalReport && factBase.length > 0 ? (
+                      factBase.map((fact, index) => (
+                        <div
+                          key={`${fact.statement}-${index}`}
+                          className="min-w-0 overflow-hidden rounded-3xl border border-border/70 bg-background/70 p-4"
+                        >
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span
+                              className={cn(
+                                "rounded-full border px-3 py-1 text-xs font-medium uppercase tracking-[0.2em]",
+                                classificationBadgeClass(fact.classification),
+                              )}
+                            >
+                              {fact.classification}
+                            </span>
+                            <Badge variant="outline" className="rounded-full px-3 py-1">
+                              {fact.confidence.confidence_score}/100 confidence
+                            </Badge>
+                            <Badge variant="outline" className="rounded-full px-3 py-1 capitalize">
+                              {fact.confidence.confidence_band}
+                            </Badge>
+                          </div>
+                          <p className="mt-3 text-base leading-7 text-foreground">{fact.statement}</p>
+                          {fact.why_it_matters ? (
+                            <p className="mt-2 text-sm leading-7 text-muted-foreground">{fact.why_it_matters}</p>
+                          ) : null}
+                          <div className="mt-3 min-w-0">
+                            <EvidencePills
+                              sourceIds={canonicalCitationSourceIds(fact.citations)}
+                              sources={document.sources}
+                              onSelectSources={handleSelectSources}
+                            />
+                          </div>
+                        </div>
+                      ))
+                    ) : document.facts.length > 0 ? (
                       document.facts.map((fact) => (
                         <div
                           key={fact.id}
@@ -1765,7 +2158,11 @@ export function ReportExperience({
                     ) : (
                       <EmptySection
                         title="Fact base pending"
-                        description="Claims appear here after the run normalizes source-backed facts and labels them clearly."
+                        description={
+                          canonicalReport
+                            ? "No additional fact-base items were stored for this report."
+                            : "Claims appear here after the run normalizes source-backed facts and labels them clearly."
+                        }
                         compact={isBuildingReport}
                       />
                     )}
@@ -1787,7 +2184,7 @@ export function ReportExperience({
                           <div className="min-w-0 flex-1 space-y-3">
                             <div className="flex flex-wrap items-center gap-2">
                               <Badge variant="secondary" className="rounded-full px-3 py-1">
-                                Source {source.id}
+                                Source {getDisplaySourceId(source)}
                               </Badge>
                               <Badge variant="outline" className="rounded-full px-3 py-1 capitalize">
                                 {formatSourceTypeLabel(source.sourceType)}
@@ -1836,7 +2233,7 @@ export function ReportExperience({
                 ) : (
                   <EmptySection
                     title="Sources pending"
-                    description="Source records appear here after crawl and enrichment persist usable evidence."
+                    description="Source records appear here once the saved brief includes cited evidence."
                     compact={isBuildingReport}
                   />
                 )}
@@ -1847,11 +2244,11 @@ export function ReportExperience({
           {reportMode === "build" ? (
             <ReportSection
               id="build-details"
-              eyebrow="Build details"
-              title="Build details"
-              description="Run status, progress, and export availability stay here without leading the seller reading path."
+              eyebrow="Report details"
+              title="Report details"
+              description="Run status, updates, and export availability stay here without leading the seller reading path."
             >
-              {currentRun?.status === "failed" ? (
+              {showHardFailureState ? (
                 <Card className="border-destructive/20 bg-destructive/5 shadow-panel">
                   <CardContent className="flex flex-col gap-4 p-6 sm:flex-row sm:items-start sm:justify-between">
                     <div className="space-y-2">
@@ -1860,7 +2257,7 @@ export function ReportExperience({
                         Report build failed
                       </div>
                       <p className="max-w-2xl text-sm leading-7 text-destructive">
-                        {normalizeVisibleCopy(currentRun.errorMessage ?? currentRun.statusMessage)}
+                        {normalizeVisibleCopy(currentRun?.errorMessage ?? currentRun?.statusMessage ?? "The latest run failed.")}
                       </p>
                     </div>
                     <div className="flex flex-wrap gap-2">

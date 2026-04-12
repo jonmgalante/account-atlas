@@ -50,6 +50,13 @@
       "when": 1775769963221,
       "tag": "0006_natural_iron_monger",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1776023424871,
+      "tag": "0007_yellow_wong",
+      "breakpoints": true
     }
   ]
 }

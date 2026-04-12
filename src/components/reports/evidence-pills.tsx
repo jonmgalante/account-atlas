@@ -3,6 +3,7 @@
 import { Link2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { getDisplaySourceId, resolveSourceByCitationId } from "@/lib/canonical-report";
 import type { ReportSourceRecord } from "@/lib/types/report";
 
 type EvidencePillsProps = {
@@ -19,7 +20,7 @@ export function EvidencePills({
   limit = 3,
 }: EvidencePillsProps) {
   const resolvedSources = sourceIds
-    .map((sourceId) => sources.find((source) => source.id === sourceId))
+    .map((sourceId) => resolveSourceByCitationId(sources, sourceId))
     .filter((source): source is ReportSourceRecord => Boolean(source));
 
   if (!resolvedSources.length) {
@@ -42,7 +43,7 @@ export function EvidencePills({
         >
           <Link2 className="h-3.5 w-3.5 shrink-0 text-primary" />
           <span className="min-w-0 truncate text-xs">
-            S{source.id} · {source.title}
+            S{getDisplaySourceId(source)} · {source.title}
           </span>
         </Button>
       ))}

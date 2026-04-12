@@ -12,7 +12,7 @@ Account Atlas is a public Next.js app that accepts a company URL and produces an
 - Drizzle ORM + Postgres
 - Vercel Queues
 - Vercel Blob
-- OpenAI Responses API with web search, file search, Structured Outputs, and one vector store per report run
+- OpenAI Responses API with web search, Structured Outputs, and one canonical stored report JSON per run
 - Zod for env and request validation
 - Vitest for unit tests
 
@@ -61,7 +61,7 @@ pnpm dev
 - `BLOB_READ_WRITE_TOKEN`
   Enables Blob-backed storage for larger crawl artifacts and Markdown/PDF exports. Without it, exports still work in local development via inline artifact storage.
 - `REPORT_PIPELINE_MODE`
-  `auto`, `inline`, or `vercel_queue`.
+  Legacy pipeline toggle kept only for rollback testing. New reports use the single deep-research background job path.
 - `REPORT_CREATE_RATE_LIMIT_MAX`
 - `REPORT_CREATE_RATE_LIMIT_WINDOW_MS`
 - `REPORT_DOMAIN_ACTIVE_COOLDOWN_MS`
@@ -76,16 +76,24 @@ pnpm dev
 
 See [.env.example](/Users/jongalante/Desktop/account-atlas/.env.example) for the current defaults.
 
-## Pipeline Behavior
+## Report Generation Architecture
 
-### Inline vs queue mode
+### Primary flow for new reports
 
-- `REPORT_PIPELINE_MODE=auto`
-  Uses Vercel Queues on Vercel and inline execution locally. On Vercel, queue publish failures are surfaced instead of falling back to unreliable inline background work.
-- `REPORT_PIPELINE_MODE=inline`
-  Runs the full pipeline in-process. Best for local development.
-- `REPORT_PIPELINE_MODE=vercel_queue`
-  Requires queue delivery. Use this when validating the real async path.
+- Normalize and validate the submitted company URL.
+- Reuse a recent ready report for the same canonical domain when possible.
+- Create one report run and start one OpenAI Responses background job with the canonical prompt and canonical schema.
+- Poll the background response through the existing report/status routes.
+- Parse and persist the canonical report JSON plus safe model metadata.
+- Run one thin publish safety check.
+- If safe, publish the full canonical brief.
+- If unsafe, downgrade to a grounded fallback brief and still publish the grounded company snapshot.
+- Render the report page, Markdown export, and PDF export from the stored canonical report JSON.
+
+### Legacy modules
+
+- The older crawl/research/account-plan pipeline modules are still present for rollback and compatibility work, but they are no longer the critical path for new reports.
+- Existing stored reports that depend on legacy `researchSummary` and `accountPlan` data remain readable through the current fallback read path.
 
 ### Report creation protections
 
@@ -98,10 +106,10 @@ See [.env.example](/Users/jongalante/Desktop/account-atlas/.env.example) for the
 
 ### Reliability guards
 
-- Crawl fetches and OpenAI calls use bounded retry/backoff.
-- Expensive pipeline steps run with explicit timeouts.
-- Step retries are capped; repeated failures open a circuit for that step on the run.
-- Queue retries are logged and remain observable through both structured logs and persisted run events.
+- OpenAI background job polling uses bounded retry/backoff.
+- Report creation, background sync, and export generation are idempotent at the run level.
+- Export failures stay non-blocking to report availability.
+- Queue retry logic remains available only for the legacy pipeline path.
 
 ### Public report honesty
 
@@ -131,11 +139,11 @@ pnpm db:generate
 
 ## Vercel Queue Setup Notes
 
+- New reports do not rely on Vercel Queues for the primary deep-research flow.
 - Queue callback lives at [route.ts](/Users/jongalante/Desktop/account-atlas/src/app/api/queues/report-runs/route.ts).
 - Queue topic name is defined in [src/server/pipeline/pipeline-dispatcher.ts](/Users/jongalante/Desktop/account-atlas/src/server/pipeline/pipeline-dispatcher.ts).
-- [vercel.json](/Users/jongalante/Desktop/account-atlas/vercel.json) must route the queue callback correctly in deployed environments.
-- In local development, missing queue config falls back to inline execution unless queue-only mode is forced.
-- In deployed Vercel environments, `REPORT_PIPELINE_MODE=auto` still expects queue publishing to succeed; failures are logged and surfaced so the run does not appear to start when the queue is unavailable.
+- [vercel.json](/Users/jongalante/Desktop/account-atlas/vercel.json) only matters if you are validating the legacy queue-backed path.
+- In local development, missing queue config does not block the main deep-research flow.
 
 ## Vercel Blob Setup Notes
 
@@ -145,9 +153,9 @@ pnpm db:generate
 
 ## OpenAI Setup Notes
 
-- OpenAI integration lives under [src/server/openai](/Users/jongalante/Desktop/account-atlas/src/server/openai) and [src/server/research](/Users/jongalante/Desktop/account-atlas/src/server/research).
-- Each report run creates one vector store and uploads normalized crawl sources plus relevant first-party PDFs for file search.
-- Missing `OPENAI_API_KEY` degrades gracefully in development: crawl still runs, but OpenAI-backed research/planning steps remain incomplete and the report stays explicit about thin or partial evidence.
+- OpenAI integration lives under [src/server/openai](/Users/jongalante/Desktop/account-atlas/src/server/openai) and [src/server/deep-research](/Users/jongalante/Desktop/account-atlas/src/server/deep-research).
+- New reports use one Responses background job with the canonical prompt and schema.
+- Missing `OPENAI_API_KEY` prevents the primary report-generation flow from producing a seller-facing brief.
 
 ## Vercel Deployment Notes
 
@@ -171,11 +179,9 @@ pnpm test
   Runs the practical readiness gate for demos and manual QA:
   - env/config consistency
   - DB connectivity and migration state
-  - queue mode or local inline fallback readiness
-  - OpenAI presence for research/synthesis
-  - crawl budget sanity
+  - OpenAI presence for the deep-research background job
   - export dependency readiness
-  - deterministic smoke coverage for the major pipeline failure modes
+  - deterministic smoke coverage for the single-job report flow and grounded fallback boundaries
 - `pnpm report:smoke`
   Runs the focused deterministic test matrix without the config/DB checks.
 
@@ -193,8 +199,9 @@ pnpm dev
 4. Submit a public URL such as `https://example.com`.
 5. Confirm the app:
    - redirects to `/reports/[shareId]`
-   - shows queued/in-progress/completed or failed status cleanly
+   - shows queued/in-progress/completed or grounded-fallback status cleanly
    - reuses a recent report when you resubmit the same domain
+   - renders from stored canonical report JSON
    - offers Markdown and PDF downloads for completed runs
 
 ## Maintenance Hooks

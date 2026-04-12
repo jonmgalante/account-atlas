@@ -5,6 +5,7 @@ import { ExternalLink, Files } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { getDisplaySourceId, resolveSourceByCitationId } from "@/lib/canonical-report";
 import { formatDateTime } from "@/lib/date";
 import type { ReportSourceRecord } from "@/lib/types/report";
 
@@ -34,7 +35,7 @@ export function ReportSourcePanel({
 }: ReportSourcePanelProps) {
   const selectedSources = selectedSourceIds.length
     ? selectedSourceIds
-        .map((sourceId) => sources.find((source) => source.id === sourceId))
+        .map((sourceId) => resolveSourceByCitationId(sources, sourceId))
         .filter((source): source is ReportSourceRecord => Boolean(source))
     : [];
   const hasSelectedSources = selectedSources.length > 0;
@@ -95,7 +96,7 @@ export function ReportSourcePanel({
                 <div className="space-y-2">
                   <div className="flex flex-wrap items-center gap-2">
                     <Badge variant="secondary" className="rounded-full px-3 py-1">
-                      Source {source.id}
+                      Source {getDisplaySourceId(source)}
                     </Badge>
                     <Badge variant="outline" className="rounded-full px-3 py-1 capitalize">
                       {formatSourceTypeLabel(source.sourceType)}

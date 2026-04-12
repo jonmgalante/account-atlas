@@ -37,6 +37,32 @@ export type ParsedStructuredResponse<T> = {
   fileSearchResults: OpenAIFileSearchResult[];
 };
 
+export type OpenAIBackgroundResponseStatus =
+  | "queued"
+  | "in_progress"
+  | "completed"
+  | "failed"
+  | "cancelled"
+  | "incomplete";
+
+export type RetrievedBackgroundResponse = {
+  responseId: string;
+  status: OpenAIBackgroundResponseStatus | null;
+  outputText: string;
+  rawResponse: {
+    id: string;
+    status: OpenAIBackgroundResponseStatus | null;
+    output: unknown;
+    usage: unknown;
+    error: unknown;
+    incompleteDetails: unknown;
+    model: string;
+    completedAt: number | null;
+  };
+  webSearchSources: OpenAIWebSearchSource[];
+  fileSearchResults: OpenAIFileSearchResult[];
+};
+
 export class OpenAIConfigError extends Error {
   constructor(message = "OPENAI_API_KEY is not configured on the server.") {
     super(message);
@@ -84,6 +110,25 @@ export type OpenAIResearchClient = {
     timeoutMs?: number;
     maxAttempts?: number;
   }): Promise<ParsedStructuredResponse<z.infer<T>>>;
+  createBackgroundStructuredOutput?<T extends z.ZodTypeAny>(input: {
+    model: string;
+    instructions: string;
+    input: string;
+    schema: T;
+    schemaName: string;
+    tools?: Array<Record<string, unknown>>;
+    include?: Array<"web_search_call.action.sources" | "file_search_call.results">;
+    metadata?: Record<string, string>;
+    maxOutputTokens?: number;
+    timeoutMs?: number;
+    maxAttempts?: number;
+  }): Promise<RetrievedBackgroundResponse>;
+  retrieveBackgroundResponse?(input: {
+    responseId: string;
+    include?: Array<"web_search_call.action.sources" | "file_search_call.results">;
+    timeoutMs?: number;
+    maxAttempts?: number;
+  }): Promise<RetrievedBackgroundResponse>;
 };
 
 declare global {
@@ -155,6 +200,23 @@ function extractFileSearchResults(output: unknown): OpenAIFileSearchResult[] {
           : null,
     }));
   });
+}
+
+function getResponseStatus(response: { status?: string | null }): OpenAIBackgroundResponseStatus | null {
+  const status = response.status;
+
+  if (
+    status === "queued" ||
+    status === "in_progress" ||
+    status === "completed" ||
+    status === "failed" ||
+    status === "cancelled" ||
+    status === "incomplete"
+  ) {
+    return status;
+  }
+
+  return null;
 }
 
 export function isOpenAIConfigError(error: unknown): error is OpenAIConfigError {
@@ -330,6 +392,94 @@ export function createOpenAIResearchClient(overrides: { client?: OpenAI } = {}):
           id: response.id,
           output: response.output,
           usage: response.usage,
+        },
+        webSearchSources: extractWebSearchSources(response.output),
+        fileSearchResults: extractFileSearchResults(response.output),
+      };
+    },
+
+    async createBackgroundStructuredOutput<T extends z.ZodTypeAny>(input: {
+      model: string;
+      instructions: string;
+      input: string;
+      schema: T;
+      schemaName: string;
+      tools?: Array<Record<string, unknown>>;
+      include?: Array<"web_search_call.action.sources" | "file_search_call.results">;
+      metadata?: Record<string, string>;
+      maxOutputTokens?: number;
+      timeoutMs?: number;
+      maxAttempts?: number;
+    }) {
+      const response = await withOpenAIRetry(
+        `openai.createBackgroundStructuredOutput:${input.schemaName}`,
+        () =>
+          resolveClient().responses.create({
+            model: input.model,
+            instructions: input.instructions,
+            input: input.input,
+            background: true,
+            store: true,
+            parallel_tool_calls: false,
+            tools: input.tools as never,
+            include: input.include as never,
+            metadata: input.metadata,
+            max_output_tokens: input.maxOutputTokens,
+            text: {
+              format: zodTextFormat(input.schema, input.schemaName),
+            },
+          }),
+        {
+          timeoutMs: input.timeoutMs,
+          maxAttempts: input.maxAttempts,
+        },
+      );
+
+      return {
+        responseId: response.id,
+        status: getResponseStatus(response),
+        outputText: response.output_text,
+        rawResponse: {
+          id: response.id,
+          status: getResponseStatus(response),
+          output: response.output,
+          usage: response.usage,
+          error: response.error,
+          incompleteDetails: response.incomplete_details,
+          model: response.model,
+          completedAt: response.completed_at ?? null,
+        },
+        webSearchSources: extractWebSearchSources(response.output),
+        fileSearchResults: extractFileSearchResults(response.output),
+      };
+    },
+
+    async retrieveBackgroundResponse(input) {
+      const response = await withOpenAIRetry(
+        `openai.retrieveBackgroundResponse:${input.responseId}`,
+        () =>
+          resolveClient().responses.retrieve(input.responseId, {
+            include: input.include as never,
+          }),
+        {
+          timeoutMs: input.timeoutMs,
+          maxAttempts: input.maxAttempts,
+        },
+      );
+
+      return {
+        responseId: response.id,
+        status: getResponseStatus(response),
+        outputText: response.output_text,
+        rawResponse: {
+          id: response.id,
+          status: getResponseStatus(response),
+          output: response.output,
+          usage: response.usage,
+          error: response.error,
+          incompleteDetails: response.incomplete_details,
+          model: response.model,
+          completedAt: response.completed_at ?? null,
         },
         webSearchSources: extractWebSearchSources(response.output),
         fileSearchResults: extractFileSearchResults(response.output),

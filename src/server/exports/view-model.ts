@@ -1,5 +1,12 @@
 import "server-only";
 
+import {
+  buildCanonicalOpportunityScorecard,
+  canonicalCitationSourceIds,
+  getCanonicalReadySectionKeys,
+  getCanonicalSectionCoverage,
+  isCanonicalGroundedFallbackReport,
+} from "@/lib/canonical-report";
 import { REPORT_SECTION_DEFINITIONS } from "@/lib/report-sections";
 import { evaluatePublishableReport, getReadyReportSectionKeys } from "@/lib/report-completion";
 import type { ReportSectionKey } from "@/lib/types/report";
@@ -229,7 +236,78 @@ function getCitationLabels(sourceIds: number[]) {
   return [...new Set(sourceIds)].sort((left, right) => left - right).map((sourceId) => `S${sourceId}`);
 }
 
+function getCanonicalCitationLabels(
+  citations:
+    | import("@/server/deep-research/report-contract").CanonicalReportCitation[]
+    | null
+    | undefined,
+) {
+  return getCitationLabels(canonicalCitationSourceIds(citations ?? []));
+}
+
+function deriveCanonicalFreshness(input: {
+  citations:
+    | import("@/server/deep-research/report-contract").CanonicalReportCitation[]
+    | null
+    | undefined;
+  canonicalReport:
+    | import("@/server/deep-research/report-contract").CanonicalAccountAtlasReport
+    | null
+    | undefined;
+}) {
+  const timestamps = (input.citations ?? [])
+    .map((citation) =>
+      input.canonicalReport?.sources.find((source) => source.source_id === citation.source_id)?.published_at,
+    )
+    .filter((value): value is string => Boolean(value))
+    .map((value) => Date.parse(value))
+    .filter((value) => Number.isFinite(value));
+
+  if (!timestamps.length) {
+    return "unknown" as const;
+  }
+
+  const newest = Math.max(...timestamps);
+  const ageDays = (Date.now() - newest) / (24 * 60 * 60 * 1000);
+
+  if (ageDays <= 30) {
+    return "current" as const;
+  }
+
+  if (ageDays <= 365) {
+    return "recent" as const;
+  }
+
+  return "stale" as const;
+}
+
 function buildSectionAssessments(run: StoredRunContext["run"]): ExportSectionAssessment[] {
+  if (run.canonicalReport) {
+    const readySectionKeys = getCanonicalReadySectionKeys(run.canonicalReport);
+
+    return REPORT_SECTION_DEFINITIONS.map((section) => {
+      const coverage = getCanonicalSectionCoverage(run.canonicalReport, section.key);
+      const status = readySectionKeys.has(section.key) ? "ready" : "pending";
+
+      return {
+        key: section.key,
+        label: section.label,
+        status,
+        confidence: status === "ready" ? coverage?.confidence.confidence_score ?? null : null,
+        confidenceRationale:
+          status === "ready" ? coverage?.confidence.rationale ?? coverage?.coverage.rationale ?? null : null,
+        completenessLabel:
+          status === "ready"
+            ? coverage?.coverage.coverage_level === "strong"
+              ? "Strong evidence"
+              : coverage?.coverage.coverage_level === "usable"
+                ? "Usable but incomplete"
+                : "Thin evidence"
+            : "Waiting on evidence",
+      };
+    });
+  }
+
   const confidenceBySection = new Map(
     run.researchSummary?.confidenceBySection.map((entry) => [entry.section, entry]) ?? [],
   );
@@ -263,6 +341,56 @@ function buildSectionAssessments(run: StoredRunContext["run"]): ExportSectionAss
 }
 
 function buildThinEvidenceWarnings(run: StoredRunContext["run"]): ExportThinEvidenceWarning[] {
+  if (run.canonicalReport) {
+    const warnings: ExportThinEvidenceWarning[] = [];
+    const canonicalReport = run.canonicalReport;
+    const coverage = canonicalReport.evidence_coverage;
+
+    if (coverage.thin_evidence || coverage.overall_coverage.coverage_level === "thin") {
+      warnings.push({
+        id: "low-completeness",
+        level: "warning",
+        title: "Research coverage is still thin",
+        message: `Evidence coverage is ${coverage.research_completeness_score}/100, so some sections should be treated as directional rather than conclusive.`,
+        citationLabels: getCanonicalCitationLabels(
+          coverage.section_coverage.flatMap((section) => section.citations),
+        ),
+      });
+    }
+
+    if (coverage.overall_confidence.confidence_band === "low") {
+      warnings.push({
+        id: "low-confidence",
+        level: "warning",
+        title: "Overall confidence is low",
+        message: coverage.overall_confidence.rationale,
+        citationLabels: getCanonicalCitationLabels(canonicalReport.executive_summary.citations),
+      });
+    }
+
+    run.canonicalReport.confidence_notes.slice(0, 3).forEach((note, index) => {
+      warnings.push({
+        id: `confidence-note-${index + 1}`,
+        level: note.level,
+        title: "Confidence note",
+        message: note.note,
+        citationLabels: getCanonicalCitationLabels(note.citations),
+      });
+    });
+
+    coverage.evidence_gaps.slice(0, 3).forEach((gap, index) => {
+      warnings.push({
+        id: `evidence-gap-${index + 1}`,
+        level: "info",
+        title: "Open evidence gap",
+        message: gap,
+        citationLabels: getCanonicalCitationLabels(canonicalReport.executive_summary.citations),
+      });
+    });
+
+    return warnings;
+  }
+
   if (!run.researchSummary) {
     return [];
   }
@@ -354,6 +482,263 @@ export function buildReportExportViewModel(input: {
   facts: PersistedFact[];
 }): ReportExportViewModel {
   const { context } = input;
+  const canonicalReport = context.run.canonicalReport;
+
+  if (canonicalReport) {
+    const readySectionKeys = getCanonicalReadySectionKeys(canonicalReport);
+    const citations = canonicalReport.sources.map((source) => ({
+      sourceId: source.source_id,
+      label: `S${source.source_id}`,
+      title: source.title,
+      url: source.url,
+      sourceTypeLabel: formatSourceTypeLabel(source.source_type),
+      sourceTier: source.source_tier,
+      mimeType: source.url.toLowerCase().endsWith(".pdf") ? "application/pdf" : "text/html",
+      publishedAt: source.published_at,
+      retrievedAt: source.retrieved_at,
+      summary: source.summary,
+    }));
+    const sortedOpportunities = [...canonicalReport.top_opportunities].sort(
+      (left, right) => left.priority_rank - right.priority_rank,
+    );
+    const topUseCases = sortedOpportunities.slice(0, 3).map((opportunity) => ({
+      priorityRank: opportunity.priority_rank,
+      departmentLabel: formatDepartmentLabel(opportunity.department),
+      workflowName: opportunity.workflow_name,
+      summary: opportunity.summary,
+      painPoint: opportunity.pain_point,
+      whyNow: opportunity.why_now,
+      likelyUsers: opportunity.likely_users,
+      expectedOutcome: opportunity.expected_outcome,
+      metrics: opportunity.success_metrics,
+      dependencies: opportunity.dependencies,
+      securityComplianceNotes: opportunity.security_compliance_notes,
+      recommendedMotionLabel: formatMotionLabel(opportunity.recommended_motion),
+      motionRationale: opportunity.motion_rationale,
+      openQuestions: opportunity.open_questions,
+      priorityScore: buildCanonicalOpportunityScorecard(opportunity).priorityScore,
+      scorecard: buildCanonicalOpportunityScorecard(opportunity),
+      citationLabels: getCanonicalCitationLabels(opportunity.citations),
+    }));
+    const candidateUseCases = sortedOpportunities.map((opportunity) => ({
+      priorityRank: opportunity.priority_rank,
+      departmentLabel: formatDepartmentLabel(opportunity.department),
+      workflowName: opportunity.workflow_name,
+      summary: opportunity.summary,
+      painPoint: opportunity.pain_point,
+      whyNow: opportunity.why_now,
+      likelyUsers: opportunity.likely_users,
+      expectedOutcome: opportunity.expected_outcome,
+      metrics: opportunity.success_metrics,
+      dependencies: opportunity.dependencies,
+      securityComplianceNotes: opportunity.security_compliance_notes,
+      recommendedMotionLabel: formatMotionLabel(opportunity.recommended_motion),
+      motionRationale: opportunity.motion_rationale,
+      openQuestions: opportunity.open_questions,
+      priorityScore: buildCanonicalOpportunityScorecard(opportunity).priorityScore,
+      scorecard: buildCanonicalOpportunityScorecard(opportunity),
+      citationLabels: getCanonicalCitationLabels(opportunity.citations),
+    }));
+
+    return {
+      publishMode: isCanonicalGroundedFallbackReport(canonicalReport) ? "grounded_fallback" : "full",
+      reportTitle: `${canonicalReport.company.resolved_name} account plan`,
+      companyName: canonicalReport.company.resolved_name,
+      canonicalDomain: canonicalReport.report_metadata.canonical_domain,
+      inputUrl: canonicalReport.report_metadata.normalized_company_url,
+      shareId: context.report.shareId,
+      reportCreatedAt: context.report.createdAt.toISOString(),
+      runStartedAt: (context.run.startedAt ?? context.run.createdAt).toISOString(),
+      overallConfidence: canonicalReport.evidence_coverage.overall_confidence.confidence_band,
+      researchCompletenessScore: canonicalReport.evidence_coverage.research_completeness_score,
+      companyIdentity: {
+        archetype: canonicalReport.company.archetype,
+        businessModel: canonicalReport.company.business_model,
+        industry: canonicalReport.company.industry,
+        headquarters: canonicalReport.company.headquarters,
+        publicCompany: canonicalReport.company.public_company,
+        citationLabels: getCanonicalCitationLabels(canonicalReport.company.citations),
+      },
+      overallMotion: {
+        label: formatMotionLabel(canonicalReport.recommended_motion.recommended_motion),
+        rationale: canonicalReport.recommended_motion.rationale,
+        citationLabels: getCanonicalCitationLabels(canonicalReport.recommended_motion.citations),
+      },
+      groundedFallbackBrief: {
+        summary: canonicalReport.grounded_fallback?.summary ?? null,
+        opportunityHypothesisNote: canonicalReport.grounded_fallback?.opportunity_hypothesis_note ?? null,
+        citationLabels: getCanonicalCitationLabels(canonicalReport.grounded_fallback?.citations),
+      },
+      growthPriorities: [
+        {
+          summary: canonicalReport.executive_summary.why_now,
+          citationLabels: getCanonicalCitationLabels(canonicalReport.executive_summary.citations),
+        },
+        {
+          summary: canonicalReport.executive_summary.strategic_takeaway,
+          citationLabels: getCanonicalCitationLabels(canonicalReport.executive_summary.citations),
+        },
+      ],
+      aiMaturityEstimate: {
+        level: canonicalReport.ai_maturity_signals.maturity_level,
+        rationale: canonicalReport.ai_maturity_signals.maturity_summary,
+        citationLabels: getCanonicalCitationLabels(canonicalReport.ai_maturity_signals.citations),
+      },
+      regulatorySensitivity: {
+        level: canonicalReport.ai_maturity_signals.regulatory_sensitivity.level,
+        rationale: canonicalReport.ai_maturity_signals.regulatory_sensitivity.rationale,
+        citationLabels: getCanonicalCitationLabels(canonicalReport.ai_maturity_signals.regulatory_sensitivity.citations),
+      },
+      notableProductSignals: canonicalReport.ai_maturity_signals.notable_signals.map((signal) => ({
+        summary: signal.summary,
+        citationLabels: getCanonicalCitationLabels(signal.citations),
+      })),
+      notableHiringSignals: [],
+      notableTrustSignals: [],
+      complaintThemes: [],
+      leadershipSocialThemes: [],
+      sectionAssessments: REPORT_SECTION_DEFINITIONS.map((section) => {
+        const coverage = getCanonicalSectionCoverage(canonicalReport, section.key);
+        const status = readySectionKeys.has(section.key) ? "ready" : "pending";
+
+        return {
+          key: section.key,
+          label: section.label,
+          status,
+          completenessLabel:
+            status === "ready"
+              ? coverage?.coverage.coverage_level === "strong"
+                ? "Strong evidence"
+                : coverage?.coverage.coverage_level === "usable"
+                  ? "Usable but incomplete"
+                  : "Thin evidence"
+              : "Waiting on evidence",
+          confidence: status === "ready" ? coverage?.confidence.confidence_score ?? null : null,
+          confidenceRationale:
+            status === "ready" ? coverage?.confidence.rationale ?? coverage?.coverage.rationale ?? null : null,
+        };
+      }),
+      thinEvidenceWarnings: buildThinEvidenceWarnings(context.run),
+      facts: [
+        {
+          id: 1,
+          sectionKey: "company-brief",
+          sectionLabel: "Company brief",
+          classification: "fact",
+          statement: canonicalReport.company.company_brief,
+          rationale: canonicalReport.company.relationship_to_url,
+          confidence:
+            getCanonicalSectionCoverage(canonicalReport, "company-brief")?.confidence.confidence_score ?? 70,
+          freshness: deriveCanonicalFreshness({
+            citations: canonicalReport.company.citations,
+            canonicalReport,
+          }),
+          sentiment: "neutral",
+          relevance: 92,
+          citationLabels: getCanonicalCitationLabels(canonicalReport.company.citations),
+        },
+        ...canonicalReport.fact_base.map((fact, index) => ({
+          id: index + 2,
+          sectionKey: "fact-base" as const,
+          sectionLabel: "Fact base",
+          classification: fact.classification,
+          statement: fact.statement,
+          rationale: fact.why_it_matters,
+          confidence: fact.confidence.confidence_score,
+          freshness: deriveCanonicalFreshness({
+            citations: fact.citations,
+            canonicalReport,
+          }),
+          sentiment: "neutral" as const,
+          relevance: 90,
+          citationLabels: getCanonicalCitationLabels(fact.citations),
+        })),
+        ...canonicalReport.ai_maturity_signals.notable_signals.map((signal, index) => ({
+          id: index + 200,
+          sectionKey: "ai-maturity-signals" as const,
+          sectionLabel: "AI maturity signals",
+          classification: "inference" as const,
+          statement: signal.summary,
+          rationale: canonicalReport.ai_maturity_signals.maturity_summary,
+          confidence:
+            getCanonicalSectionCoverage(canonicalReport, "ai-maturity-signals")?.confidence.confidence_score ??
+            canonicalReport.evidence_coverage.overall_confidence.confidence_score,
+          freshness: deriveCanonicalFreshness({
+            citations: signal.citations,
+            canonicalReport,
+          }),
+          sentiment: "neutral" as const,
+          relevance: 84,
+          citationLabels: getCanonicalCitationLabels(signal.citations),
+        })),
+      ],
+      topUseCases,
+      candidateUseCases,
+      stakeholders: canonicalReport.buying_map.stakeholder_hypotheses.map((stakeholder) => ({
+        likelyRole: stakeholder.likely_role,
+        department: stakeholder.department ? formatDepartmentLabel(stakeholder.department) : null,
+        hypothesis: stakeholder.hypothesis,
+        rationale: stakeholder.rationale,
+        confidence: stakeholder.confidence.confidence_score,
+        citationLabels: getCanonicalCitationLabels(stakeholder.citations),
+      })),
+      objectionsAndRebuttals: canonicalReport.buying_map.likely_objections.map((item) => ({
+        objection: item.objection,
+        rebuttal: item.rebuttal,
+        citationLabels: getCanonicalCitationLabels(item.citations),
+      })),
+      discoveryQuestions: canonicalReport.buying_map.discovery_questions.map((item) => ({
+        question: item.question,
+        whyItMatters: item.why_it_matters,
+        citationLabels: getCanonicalCitationLabels(item.citations),
+      })),
+      pilotPlan: canonicalReport.pilot_plan
+        ? {
+            objective: canonicalReport.pilot_plan.objective,
+            recommendedMotionLabel: formatMotionLabel(canonicalReport.pilot_plan.recommended_motion),
+            scope: canonicalReport.pilot_plan.scope,
+            successMetrics: canonicalReport.pilot_plan.success_metrics,
+            phases: canonicalReport.pilot_plan.phases.map((phase) => ({
+              name: phase.name,
+              duration: phase.duration,
+              goals: phase.goals,
+              deliverables: phase.deliverables,
+            })),
+            dependencies: canonicalReport.pilot_plan.dependencies,
+            risks: canonicalReport.pilot_plan.risks,
+            citationLabels: getCanonicalCitationLabels(canonicalReport.pilot_plan.citations),
+          }
+        : null,
+      expansionScenarios: {
+        low: canonicalReport.expansion_scenarios.low
+          ? {
+              summary: canonicalReport.expansion_scenarios.low.summary,
+              assumptions: canonicalReport.expansion_scenarios.low.assumptions,
+              expectedOutcomes: canonicalReport.expansion_scenarios.low.expected_outcomes,
+              citationLabels: getCanonicalCitationLabels(canonicalReport.expansion_scenarios.low.citations),
+            }
+          : null,
+        base: canonicalReport.expansion_scenarios.base
+          ? {
+              summary: canonicalReport.expansion_scenarios.base.summary,
+              assumptions: canonicalReport.expansion_scenarios.base.assumptions,
+              expectedOutcomes: canonicalReport.expansion_scenarios.base.expected_outcomes,
+              citationLabels: getCanonicalCitationLabels(canonicalReport.expansion_scenarios.base.citations),
+            }
+          : null,
+        high: canonicalReport.expansion_scenarios.high
+          ? {
+              summary: canonicalReport.expansion_scenarios.high.summary,
+              assumptions: canonicalReport.expansion_scenarios.high.assumptions,
+              expectedOutcomes: canonicalReport.expansion_scenarios.high.expected_outcomes,
+              citationLabels: getCanonicalCitationLabels(canonicalReport.expansion_scenarios.high.citations),
+            }
+          : null,
+      },
+      citations,
+    };
+  }
+
   const researchSummary = context.run.researchSummary;
   const accountPlan = context.run.accountPlan;
   const publishability = evaluatePublishableReport({

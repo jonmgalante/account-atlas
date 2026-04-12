@@ -1,7 +1,8 @@
 "use client";
 
-import { CheckCircle2, CircleAlert, CircleDashed, LoaderCircle } from "lucide-react";
+import { AlertCircle, CheckCircle2, CircleDashed, LoaderCircle } from "lucide-react";
 
+import { isCanonicalGroundedFallbackReport } from "@/lib/canonical-report";
 import type { ReportStatusShell } from "@/lib/types/report";
 import { formatDateTime } from "@/lib/date";
 import { Badge } from "@/components/ui/badge";
@@ -13,48 +14,25 @@ type ReportStatusPanelProps = {
   errorMessage: string | null;
 };
 
-function formatDepartmentLabel(department: string) {
-  return department
-    .replace("success_services", "success / services")
-    .replace("customer_support", "customer support")
-    .replace("it_security", "IT / security")
-    .replace("analytics_data", "analytics / data")
-    .replaceAll("_", " ");
-}
-
-function formatRunStatusLabel(status: string) {
+function formatDisplayStatusLabel(status: ReportStatusShell["displayStatus"]) {
   switch (status) {
     case "queued":
       return "Queued";
-    case "fetching":
-    case "extracting":
-    case "synthesizing":
-      return "Building report";
+    case "in_progress":
+      return "In progress";
     case "completed":
       return "Ready";
+    case "completed_with_grounded_fallback":
+      return "Grounded brief ready";
     case "failed":
       return "Failed";
-    case "cancelled":
-      return "Cancelled";
     default:
-      return status.replaceAll("_", " ");
+      return "Unavailable";
   }
 }
 
-function getPrimaryStatusLabel(status: ReportStatusShell) {
-  if (status.report.status === "ready_with_limited_coverage") {
-    const researchCompletenessScore = status.currentRun?.researchSummary?.researchCompletenessScore ?? null;
-
-    return researchCompletenessScore !== null && researchCompletenessScore >= 75
-      ? "Ready with focused coverage"
-      : "Ready with limited coverage";
-  }
-
-  if (status.report.status === "ready") {
-    return "Ready";
-  }
-
-  return status.currentRun ? formatRunStatusLabel(status.currentRun.status) : formatRunStatusLabel(status.report.status);
+function normalizeBadgeComparisonText(text: string) {
+  return text.toLowerCase().replaceAll("completed", "complete").replaceAll("ready", "").replace(/\s+/g, "");
 }
 
 function normalizeVisibleCopy(text: string) {
@@ -65,71 +43,46 @@ function normalizeVisibleCopy(text: string) {
     .replaceAll("public report", "shareable report")
     .replaceAll("public web", "public-web")
     .replaceAll("Research completeness", "Evidence coverage")
-    .replaceAll("report pipeline", "report build");
+    .replaceAll("report pipeline", "report build")
+    .replaceAll("canonical report", "saved brief");
+}
+
+function getStatusIcon(displayStatus: ReportStatusShell["displayStatus"], isPolling: boolean) {
+  if (displayStatus === "failed") {
+    return <AlertCircle className="h-4 w-4 text-destructive" />;
+  }
+
+  if (displayStatus === "completed" || displayStatus === "completed_with_grounded_fallback") {
+    return <CheckCircle2 className="h-4 w-4 text-emerald-600" />;
+  }
+
+  if (displayStatus === "queued" || displayStatus === "in_progress") {
+    return <LoaderCircle className={`h-4 w-4 text-primary ${isPolling ? "animate-spin" : ""}`} />;
+  }
+
+  return <CircleDashed className="h-4 w-4 text-muted-foreground" />;
 }
 
 function getRunNarrative(status: ReportStatusShell) {
   const currentRun = status.currentRun;
 
   if (!currentRun) {
-    return "Build progress will appear here as soon as status reporting starts.";
+    return "Run updates appear here once the report starts processing.";
   }
 
-  const currentStepState = currentRun.stepKey
-    ? currentRun.progress.steps.find((step) => step.key === currentRun.stepKey)?.status
-    : null;
-
-  if (status.report.status === "ready_with_limited_coverage" && currentRun.status !== "completed") {
-    return "The core brief is already usable. Optional enrichment or export work may still finish in the background, and some optional coverage details may fill in on refresh.";
-  }
-
-  if (status.report.status === "ready" && currentRun.status !== "completed") {
-    return "The core brief is already ready. Optional enrichment or export work may still finish in the background.";
-  }
-
-  switch (currentRun.status) {
+  switch (status.displayStatus ?? currentRun.displayStatus) {
     case "queued":
-      return "The brief has been created and is waiting for the next research worker.";
-    case "fetching":
-    case "extracting":
-    case "synthesizing":
-      if (currentStepState === "retrying") {
-        return "The latest attempt hit a retryable issue. Account Atlas is keeping the run active and will retry this step automatically.";
-      }
-
-      return currentRun.stepLabel
-        ? `${currentRun.stepLabel} is currently running. Newly persisted sources, facts, and report sections appear here as they are committed.`
-        : "The brief is actively collecting and synthesizing public-web evidence.";
+      return "The report has been created and is waiting for research to begin.";
+    case "in_progress":
+      return "Account Atlas is researching the target company and preparing the saved brief.";
+    case "completed_with_grounded_fallback":
+      return "The report is ready as a grounded brief. The verified company snapshot and citations stay visible while stronger opportunity claims are held back.";
     case "completed":
-      if (status.report.status === "ready_with_limited_coverage") {
-        const researchCompletenessScore = currentRun.researchSummary?.researchCompletenessScore ?? null;
-
-        return researchCompletenessScore !== null && researchCompletenessScore >= 75
-          ? "The latest run finished with focused source coverage. The core brief is usable, with lighter coverage in some optional areas or exports."
-          : "The latest run finished with a usable brief, with lighter coverage in some optional areas or exports.";
-      }
-
-      return "The latest run finished successfully. The AI account brief reflects the persisted public-web evidence gathered for this report.";
+      return "The report is ready and the page is rendering from the saved brief.";
     case "failed":
-      return "The latest run stopped before all sections completed. Review the build log and any partial output below to see what finished.";
-    case "cancelled":
-      return "The latest run was cancelled before completion. Review the partial output and build log for the last persisted state.";
+      return "The latest run stopped before a usable shareable brief was finalized.";
     default:
-      return "Build progress will appear here as soon as status reporting starts.";
-  }
-}
-
-function getStepIcon(status: NonNullable<ReportStatusShell["currentRun"]>["progress"]["steps"][number]["status"]) {
-  switch (status) {
-    case "completed":
-      return <CheckCircle2 className="h-4 w-4 text-emerald-600" />;
-    case "failed":
-      return <CircleAlert className="h-4 w-4 text-destructive" />;
-    case "retrying":
-    case "running":
-      return <LoaderCircle className="h-4 w-4 animate-spin text-primary" />;
-    default:
-      return <CircleDashed className="h-4 w-4 text-muted-foreground" />;
+      return "Run updates appear here once the report starts processing.";
   }
 }
 
@@ -138,9 +91,9 @@ export function ReportStatusPanel({ status, isPolling, errorMessage }: ReportSta
     return (
       <Card className="border-border/70 bg-card/75 shadow-panel">
         <CardHeader className="space-y-3">
-          <CardTitle className="text-2xl">Build details</CardTitle>
+          <CardTitle className="text-2xl">Report details</CardTitle>
           <p className="text-sm leading-7 text-foreground/70">
-            No build details are available for this report yet.
+            No run details are available for this report yet.
           </p>
         </CardHeader>
       </Card>
@@ -148,37 +101,64 @@ export function ReportStatusPanel({ status, isPolling, errorMessage }: ReportSta
   }
 
   const currentRun = status.currentRun;
+  const displayStatus = status.displayStatus ?? currentRun.displayStatus;
+  const canonicalReport = currentRun.canonicalReport;
+  const evidenceCoverage =
+    canonicalReport?.evidence_coverage.research_completeness_score ??
+    currentRun.researchSummary?.researchCompletenessScore ??
+    null;
+  const confidenceBand =
+    canonicalReport?.evidence_coverage.overall_confidence.confidence_band ??
+    currentRun.researchSummary?.overallConfidence ??
+    null;
+  const briefSnapshot = canonicalReport
+    ? isCanonicalGroundedFallbackReport(canonicalReport)
+      ? canonicalReport.grounded_fallback?.summary
+      : canonicalReport.recommended_motion.rationale
+    : currentRun.accountPlan?.publishMode === "grounded_fallback"
+      ? currentRun.accountPlan.groundedFallbackBrief?.summary
+      : currentRun.accountPlan?.overallAccountMotion.rationale;
+  const shouldShowResultBadge =
+    normalizeBadgeComparisonText(status.result.label) !==
+    normalizeBadgeComparisonText(formatDisplayStatusLabel(displayStatus));
 
   return (
     <Card className="border-border/70 bg-card/82 shadow-panel">
       <CardHeader className="space-y-5">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="space-y-2">
-            <div className="text-[11px] font-medium uppercase tracking-[0.22em] text-muted-foreground">Build details</div>
-            <CardTitle className="text-2xl">Report build details</CardTitle>
+            <div className="text-[11px] font-medium uppercase tracking-[0.22em] text-muted-foreground">Report details</div>
+            <CardTitle className="text-2xl">Run details</CardTitle>
           </div>
           <div className="flex flex-wrap gap-2">
             <Badge className="rounded-full px-3 py-1" variant="secondary">
-              {getPrimaryStatusLabel(status)}
+              {formatDisplayStatusLabel(displayStatus)}
             </Badge>
-            <Badge className="rounded-full px-3 py-1" variant="outline">
-              {status.result.label}
-            </Badge>
+            {shouldShowResultBadge ? (
+              <Badge className="rounded-full px-3 py-1" variant="outline">
+                {status.result.label}
+              </Badge>
+            ) : null}
           </div>
         </div>
         <p className="max-w-3xl text-sm leading-7 text-foreground/70">{getRunNarrative(status)}</p>
         <div className="grid gap-3 sm:grid-cols-3">
           <div className="rounded-[1.5rem] border border-border/70 bg-background/72 p-4">
-            <div className="text-[11px] font-medium uppercase tracking-[0.22em] text-muted-foreground">Current step</div>
-            <div className="mt-2 font-medium text-foreground">{currentRun.stepLabel ?? "Queued for processing"}</div>
+            <div className="text-[11px] font-medium uppercase tracking-[0.22em] text-muted-foreground">Run state</div>
+            <div className="mt-2 flex items-center gap-2 font-medium text-foreground">
+              {getStatusIcon(displayStatus, isPolling)}
+              {formatDisplayStatusLabel(displayStatus)}
+            </div>
           </div>
           <div className="rounded-[1.5rem] border border-border/70 bg-background/72 p-4">
             <div className="text-[11px] font-medium uppercase tracking-[0.22em] text-muted-foreground">Latest update</div>
             <div className="mt-2 font-medium text-foreground">{formatDateTime(currentRun.updatedAt)}</div>
           </div>
           <div className="rounded-[1.5rem] border border-border/70 bg-background/72 p-4">
-            <div className="text-[11px] font-medium uppercase tracking-[0.22em] text-muted-foreground">Evidence quality</div>
-            <div className="mt-2 font-medium text-foreground">{status.result.label}</div>
+            <div className="text-[11px] font-medium uppercase tracking-[0.22em] text-muted-foreground">Evidence coverage</div>
+            <div className="mt-2 font-medium text-foreground">
+              {evidenceCoverage === null ? status.result.label : `${evidenceCoverage}/100`}
+            </div>
           </div>
         </div>
         <div className="rounded-[1.5rem] border border-border/70 bg-background/72 px-4 py-3 text-sm leading-7 text-foreground/70">
@@ -189,51 +169,35 @@ export function ReportStatusPanel({ status, isPolling, errorMessage }: ReportSta
       </CardHeader>
 
       <CardContent className="space-y-6">
-        <div className="space-y-4 rounded-[1.75rem] border border-border/70 bg-background/72 p-4">
-          <div className="flex items-center justify-between text-sm text-muted-foreground">
-            <span>{currentRun.stepLabel ?? "Queued for processing"}</span>
-            <span className="font-medium text-foreground">{currentRun.progressPercent}%</span>
+        <div className="grid gap-3 lg:grid-cols-3">
+          <div className="rounded-[1.5rem] border border-border/70 bg-background/72 p-4">
+            <div className="text-[11px] font-medium uppercase tracking-[0.22em] text-muted-foreground">Research job</div>
+            <div className="mt-2 font-medium capitalize text-foreground">
+              {currentRun.openaiResponseStatus?.replaceAll("_", " ") ?? "Not started"}
+            </div>
           </div>
-          <div className="h-3 rounded-full bg-muted">
-            <div
-              className="h-full rounded-full bg-primary transition-[width]"
-              style={{ width: `${currentRun.progressPercent}%` }}
-            />
+          <div className="rounded-[1.5rem] border border-border/70 bg-background/72 p-4">
+            <div className="text-[11px] font-medium uppercase tracking-[0.22em] text-muted-foreground">Confidence</div>
+            <div className="mt-2 font-medium capitalize text-foreground">{confidenceBand ?? "Pending"}</div>
           </div>
-          <div className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
-            {currentRun.progress.completedSteps} of {currentRun.progress.totalSteps} build steps completed
+          <div className="rounded-[1.5rem] border border-border/70 bg-background/72 p-4">
+            <div className="text-[11px] font-medium uppercase tracking-[0.22em] text-muted-foreground">Saved report</div>
+            <div className="mt-2 font-medium text-foreground">
+              {canonicalReport ? "Stored and rendering" : "Waiting on saved brief"}
+            </div>
           </div>
         </div>
 
-        <div className="space-y-3">
-          <div className="flex items-center justify-between gap-3">
-            <h3 className="text-lg font-semibold text-foreground">Build steps</h3>
+        {briefSnapshot ? (
+          <div className="rounded-[1.75rem] border border-border/70 bg-background/72 p-4">
+            <div className="font-medium text-foreground">Brief snapshot</div>
+            <p className="mt-2 text-sm leading-7 text-foreground/70">{briefSnapshot}</p>
           </div>
-          <div className="grid gap-3 lg:grid-cols-2">
-            {currentRun.progress.steps.map((step) => (
-              <div
-                key={step.key}
-                className="flex items-start justify-between gap-3 rounded-[1.5rem] border border-border/70 bg-background/72 px-4 py-4"
-              >
-                <div className="flex items-start gap-3">
-                  <div className="pt-0.5">{getStepIcon(step.status)}</div>
-                  <div>
-                    <div className="font-medium text-foreground">{step.label}</div>
-                    <div className="text-xs capitalize text-muted-foreground">{step.status.replaceAll("_", " ")}</div>
-                  </div>
-                </div>
-                <div className="text-right text-xs text-muted-foreground">
-                  <div className="font-medium text-foreground">{step.progressPercent}%</div>
-                  <div>{step.attemptCount} tries</div>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
+        ) : null}
 
         <div className="space-y-3">
           <div className="flex items-center justify-between">
-            <h3 className="text-lg font-semibold text-foreground">Build log</h3>
+            <h3 className="text-lg font-semibold text-foreground">Recent updates</h3>
             {isPolling ? <span className="text-xs text-muted-foreground">Checking for updates…</span> : null}
           </div>
           <div className="space-y-2">
@@ -253,58 +217,6 @@ export function ReportStatusPanel({ status, isPolling, errorMessage }: ReportSta
             ))}
           </div>
         </div>
-
-        {currentRun.accountPlan
-          ? (() => {
-              const accountPlan = currentRun.accountPlan;
-
-              return (
-                <div className="space-y-3">
-                  <div className="flex items-center justify-between gap-3">
-                    <h3 className="text-lg font-semibold text-foreground">AI account brief snapshot</h3>
-                    <Badge className="rounded-full px-3 py-1 uppercase" variant="outline">
-                      {accountPlan.publishMode === "grounded_fallback"
-                        ? "grounded brief"
-                        : accountPlan.overallAccountMotion.recommendedMotion.replaceAll("_", " ")}
-                    </Badge>
-                  </div>
-                  <div className="rounded-[1.5rem] border border-border/70 bg-background/72 px-4 py-4 text-sm text-muted-foreground">
-                    {accountPlan.publishMode === "grounded_fallback"
-                      ? accountPlan.groundedFallbackBrief?.summary
-                      : accountPlan.overallAccountMotion.rationale}
-                  </div>
-                  <div className="grid gap-3">
-                    {(accountPlan.publishMode === "grounded_fallback"
-                      ? accountPlan.candidateUseCases
-                      : accountPlan.topUseCases
-                    ).map((useCase) => (
-                      <div
-                        key={`${useCase.priorityRank}-${useCase.workflowName}`}
-                        className="rounded-[1.5rem] border border-border/70 bg-background/72 px-4 py-4"
-                      >
-                        <div className="flex items-start justify-between gap-3">
-                          <div>
-                            <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">
-                              {accountPlan.publishMode === "grounded_fallback"
-                                ? `Hypothesis • ${formatDepartmentLabel(useCase.department)}`
-                                : `Top ${useCase.priorityRank} • ${formatDepartmentLabel(useCase.department)}`}
-                            </div>
-                            <div className="mt-1 font-medium text-foreground">{useCase.workflowName}</div>
-                          </div>
-                          <Badge className="rounded-full px-3 py-1" variant="secondary">
-                            {accountPlan.publishMode === "grounded_fallback"
-                              ? `${useCase.scorecard.evidenceConfidence}/100`
-                              : useCase.scorecard.priorityScore}
-                          </Badge>
-                        </div>
-                        <p className="mt-2 text-sm leading-7 text-muted-foreground">{useCase.summary}</p>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              );
-            })()
-          : null}
 
         {errorMessage ? (
           <div className="rounded-[1.25rem] border border-destructive/20 bg-destructive/5 px-4 py-3 text-sm text-destructive">

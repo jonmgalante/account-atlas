@@ -6,6 +6,7 @@ import type { SourceType } from "@/lib/source";
 import type { AccountPlanUseCase, FinalAccountPlan, StakeholderHypothesis } from "@/lib/types/account-plan";
 import type { PipelineExecutionMode, PipelineStepKey, ReportEventLevel } from "@/lib/types/report";
 import type { PersistedFactRecord, ResearchSummary } from "@/lib/types/research";
+import type { CanonicalAccountAtlasReport } from "@/server/deep-research/report-contract";
 import { getDb } from "@/server/db/client";
 import {
   artifacts,
@@ -51,6 +52,11 @@ const reportRunColumns = {
   pipelineState: reportRuns.pipelineState,
   queueMessageId: reportRuns.queueMessageId,
   vectorStoreId: reportRuns.vectorStoreId,
+  openaiResponseId: reportRuns.openaiResponseId,
+  openaiResponseStatus: reportRuns.openaiResponseStatus,
+  openaiResponseMetadata: reportRuns.openaiResponseMetadata,
+  openaiOutputText: reportRuns.openaiOutputText,
+  canonicalReport: reportRuns.canonicalReport,
   researchSummary: reportRuns.researchSummary,
   accountPlan: reportRuns.accountPlan,
   errorCode: reportRuns.errorCode,
@@ -157,6 +163,11 @@ export type PersistedRun = {
   };
   queueMessageId: string | null;
   vectorStoreId: string | null;
+  openaiResponseId?: string | null;
+  openaiResponseStatus?: string | null;
+  openaiResponseMetadata?: Record<string, unknown>;
+  openaiOutputText?: string | null;
+  canonicalReport?: CanonicalAccountAtlasReport | null;
   researchSummary: ResearchSummary | null;
   accountPlan: FinalAccountPlan | null;
   errorCode: string | null;
@@ -429,6 +440,16 @@ export type ReportRepository = {
     reportId: number;
     runId: number;
     vectorStoreId: string;
+  }): Promise<void>;
+  setRunOpenAIState?(input: {
+    reportId: number;
+    runId: number;
+    openaiResponseId?: string | null;
+    openaiResponseStatus?: string | null;
+    openaiResponseMetadata?: Record<string, unknown>;
+    openaiOutputText?: string | null;
+    canonicalReport?: CanonicalAccountAtlasReport | null;
+    statusMessage?: string;
   }): Promise<void>;
   updateRunResearchSummary(input: {
     reportId: number;
@@ -772,6 +793,37 @@ export const drizzleReportRepository: ReportRepository = {
         updatedAt: new Date(),
       })
       .where(and(eq(reportRuns.id, runId), eq(reportRuns.reportId, reportId)));
+  },
+
+  async setRunOpenAIState(input) {
+    const db = getDb();
+    const now = new Date();
+
+    await db.transaction(async (tx) => {
+      await tx
+        .update(reportRuns)
+        .set({
+          ...(input.openaiResponseId !== undefined ? { openaiResponseId: input.openaiResponseId } : {}),
+          ...(input.openaiResponseStatus !== undefined ? { openaiResponseStatus: input.openaiResponseStatus } : {}),
+          ...(input.openaiResponseMetadata !== undefined
+            ? {
+                openaiResponseMetadata: input.openaiResponseMetadata,
+              }
+            : {}),
+          ...(input.openaiOutputText !== undefined ? { openaiOutputText: input.openaiOutputText } : {}),
+          ...(input.canonicalReport !== undefined ? { canonicalReport: input.canonicalReport } : {}),
+          ...(input.statusMessage !== undefined ? { statusMessage: input.statusMessage } : {}),
+          updatedAt: now,
+        })
+        .where(and(eq(reportRuns.id, input.runId), eq(reportRuns.reportId, input.reportId)));
+
+      await tx
+        .update(reports)
+        .set({
+          updatedAt: now,
+        })
+        .where(eq(reports.id, input.reportId));
+    });
   },
 
   async claimRunStepExecution(input) {

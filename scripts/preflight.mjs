@@ -365,10 +365,7 @@ addCheck(checks, {
 });
 
 const smokeMatrix = [
-  "src/server/pipeline/pipeline-runner.test.ts",
-  "src/server/crawl/company-site-crawler.test.ts",
-  "src/server/research/research-service.test.ts",
-  "src/server/account-plan/account-plan-service.test.ts",
+  "src/server/deep-research/report-generation-service.test.ts",
   "src/server/exports/export-service.test.ts",
   "src/server/services/report-service.test.ts",
 ];
@@ -387,7 +384,7 @@ if (skipSmoke) {
     status: smokeResult.status === 0 ? "ok" : "error",
     summary:
       smokeResult.status === 0
-        ? "Deterministic smoke matrix passed for queue retry/resume, crawl fallback, partial-coverage success, export fallback, and hard-failure boundaries."
+        ? "Deterministic smoke matrix passed for the single deep-research report flow, canonical JSON persistence, render/export paths, and grounded fallback boundaries."
         : "Deterministic smoke matrix failed.",
     details: {
       command: "pnpm report:smoke",

@@ -25,7 +25,7 @@ export function useReportStatus({ shareId, initialStatus }: UseReportStatusOptio
         ? JSON.stringify({
             reportUpdatedAt: initialStatus.report.updatedAt,
             runUpdatedAt: initialStatus.currentRun?.updatedAt ?? null,
-            stepKey: initialStatus.currentRun?.stepKey ?? null,
+            displayStatus: initialStatus.displayStatus ?? initialStatus.currentRun?.displayStatus ?? null,
             runStatus: initialStatus.currentRun?.status ?? null,
             reportStatus: initialStatus.report.status,
           })
@@ -74,7 +74,7 @@ export function useReportStatus({ shareId, initialStatus }: UseReportStatusOptio
         const nextSignature = JSON.stringify({
           reportUpdatedAt: payload.data.report.updatedAt,
           runUpdatedAt: payload.data.currentRun?.updatedAt ?? null,
-          stepKey: payload.data.currentRun?.stepKey ?? null,
+          displayStatus: payload.data.displayStatus ?? payload.data.currentRun?.displayStatus ?? null,
           runStatus: payload.data.currentRun?.status ?? null,
           reportStatus: payload.data.report.status,
         });

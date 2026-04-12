@@ -10,7 +10,7 @@
     "db:doctor": "node scripts/db-doctor.mjs",
     "run:inspect": "node scripts/run-inspect.mjs",
     "quality:check": "node scripts/quality-check.mjs",
-    "report:smoke": "vitest run src/server/pipeline/pipeline-runner.test.ts src/server/crawl/company-site-crawler.test.ts src/server/research/research-service.test.ts src/server/account-plan/account-plan-service.test.ts src/server/exports/export-service.test.ts src/server/services/report-service.test.ts",
+    "report:smoke": "vitest run src/server/deep-research/report-generation-service.test.ts src/server/exports/export-service.test.ts src/server/services/report-service.test.ts",
     "preflight": "node scripts/preflight.mjs",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",

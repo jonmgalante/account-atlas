@@ -18,6 +18,7 @@ import { sourceTypeValues } from "@/lib/source";
 import type { FinalAccountPlan, UseCaseScorecard } from "@/lib/types/account-plan";
 import { useCaseDepartmentValues } from "@/lib/types/account-plan";
 import type { ResearchSummary } from "@/lib/types/research";
+import type { CanonicalAccountAtlasReport } from "@/server/deep-research/report-contract";
 
 type StoredPipelineStepState = {
   status: "pending" | "running" | "retrying" | "completed" | "failed";
@@ -128,6 +129,14 @@ export const reportRuns = pgTable(
     pipelineState: jsonb("pipeline_state").$type<StoredPipelineState>().notNull().default(emptyJsonObject),
     queueMessageId: varchar("queue_message_id", { length: 128 }),
     vectorStoreId: varchar("vector_store_id", { length: 128 }),
+    openaiResponseId: varchar("openai_response_id", { length: 128 }),
+    openaiResponseStatus: varchar("openai_response_status", { length: 32 }),
+    openaiResponseMetadata: jsonb("openai_response_metadata")
+      .$type<Record<string, unknown>>()
+      .notNull()
+      .default(emptyJsonObject),
+    openaiOutputText: text("openai_output_text"),
+    canonicalReport: jsonb("canonical_report").$type<CanonicalAccountAtlasReport | null>(),
     researchSummary: jsonb("research_summary").$type<ResearchSummary | null>(),
     accountPlan: jsonb("account_plan").$type<FinalAccountPlan | null>(),
     errorCode: varchar("error_code", { length: 64 }),
