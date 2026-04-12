@@ -2,7 +2,7 @@ import "server-only";
 
 import type { PipelineStepKey, PipelineStepStatus } from "@/lib/types/report";
 import {
-  evaluateSellerFacingReport,
+  evaluatePublishableReport,
   formatMinimumViableRequirement,
   formatOptionalCoverageGap,
 } from "@/lib/report-completion";
@@ -57,6 +57,7 @@ type StepHandler = (context: StepHandlerContext) => Promise<StepOutcome>;
 const STEP_TIMEOUT_MS: Record<PipelineStepKey, number> = {
   normalize_target: 10_000,
   crawl_company_site: 90_000,
+  resolve_company_entity: 120_000,
   enrich_external_sources: 240_000,
   build_fact_base: 120_000,
   generate_account_plan: 240_000,
@@ -68,6 +69,7 @@ const STEP_TIMEOUT_MS: Record<PipelineStepKey, number> = {
 const STEP_MAX_ATTEMPTS: Record<PipelineStepKey, number> = {
   normalize_target: 2,
   crawl_company_site: 3,
+  resolve_company_entity: 2,
   enrich_external_sources: 3,
   build_fact_base: 3,
   generate_account_plan: 3,
@@ -218,6 +220,15 @@ function createStepHandlers(
       };
     },
 
+    async resolve_company_entity({ report, run }) {
+      return {
+        message: await researchService.resolveCompanyEntity({
+          report,
+          run,
+        }),
+      };
+    },
+
     async enrich_external_sources({ report, run }) {
       return {
         message: await researchService.enrichExternalSources({
@@ -278,7 +289,7 @@ function createStepHandlers(
     async finalize_report({ run, repository }) {
       const artifacts = await repository.listArtifactsByRunId(run.id);
       const availableArtifactTypes = new Set(artifacts.map((artifact) => artifact.artifactType));
-      const contract = evaluateSellerFacingReport({
+      const contract = evaluatePublishableReport({
         researchSummary: run.researchSummary,
         accountPlan: run.accountPlan,
       });
@@ -302,10 +313,12 @@ function createStepHandlers(
       if (run.accountPlan) {
         return {
           message:
-            limitedCoverageAreas.length > 0
-              ? `The report run completed with a usable source-backed account brief and limited coverage in ${limitedCoverageAreas.join(", ")}.`
-              : `The report run completed with a source-backed account plan, ${run.accountPlan.topUseCases.length} prioritized use cases, and downloadable ${availableArtifactTypes.has("pdf") ? "Markdown/PDF" : availableArtifactTypes.has("markdown") ? "Markdown" : "web"} exports.`,
-          fallbackApplied: limitedCoverageAreas.length > 0,
+            contract.publishMode === "grounded_fallback"
+              ? `The report run completed with a grounded company brief for ${run.researchSummary?.companyIdentity.companyName ?? "the target company"}. Company-specific opportunity fit remained low-confidence, so Account Atlas published a shorter citation-backed snapshot${run.accountPlan.candidateUseCases.length > 0 ? " with grounded opportunity hypotheses" : ""}.`
+              : limitedCoverageAreas.length > 0
+                ? `The report run completed with a usable source-backed account brief and limited coverage in ${limitedCoverageAreas.join(", ")}.`
+                : `The report run completed with a source-backed account plan, ${run.accountPlan.topUseCases.length} prioritized use cases, and downloadable ${availableArtifactTypes.has("pdf") ? "Markdown/PDF" : availableArtifactTypes.has("markdown") ? "Markdown" : "web"} exports.`,
+          fallbackApplied: limitedCoverageAreas.length > 0 || contract.publishMode === "grounded_fallback",
         };
       }
 
@@ -439,7 +452,7 @@ async function resolveFallbackForExhaustedStep(input: {
         return null;
       }
 
-      const contract = evaluateSellerFacingReport({
+      const contract = evaluatePublishableReport({
         researchSummary: refreshed.run.researchSummary,
         accountPlan: refreshed.run.accountPlan,
       });
@@ -448,7 +461,9 @@ async function resolveFallbackForExhaustedStep(input: {
         return null;
       }
 
-      return "Account-plan synthesis exhausted retries after the core seller-facing brief was already persisted. Continuing without optional sections.";
+      return contract.publishMode === "grounded_fallback"
+        ? "Account-plan synthesis exhausted retries after a grounded company brief was already persisted. Continuing without full opportunity recommendations."
+        : "Account-plan synthesis exhausted retries after the core seller-facing brief was already persisted. Continuing without optional sections.";
     }
     default:
       return null;

@@ -1,7 +1,7 @@
 import "server-only";
 
 import { REPORT_SECTION_DEFINITIONS } from "@/lib/report-sections";
-import { getReadyReportSectionKeys } from "@/lib/report-completion";
+import { evaluatePublishableReport, getReadyReportSectionKeys } from "@/lib/report-completion";
 import type { ReportSectionKey } from "@/lib/types/report";
 import type { ResearchSummary } from "@/lib/types/research";
 import type {
@@ -89,6 +89,7 @@ export type ExportUseCase = {
 };
 
 export type ReportExportViewModel = {
+  publishMode: "full" | "grounded_fallback" | "insufficient";
   reportTitle: string;
   companyName: string;
   canonicalDomain: string;
@@ -109,6 +110,11 @@ export type ReportExportViewModel = {
   overallMotion: {
     label: string;
     rationale: string;
+    citationLabels: string[];
+  };
+  groundedFallbackBrief: {
+    summary: string | null;
+    opportunityHypothesisNote: string | null;
     citationLabels: string[];
   };
   growthPriorities: ExportLinkedItem[];
@@ -350,6 +356,10 @@ export function buildReportExportViewModel(input: {
   const { context } = input;
   const researchSummary = context.run.researchSummary;
   const accountPlan = context.run.accountPlan;
+  const publishability = evaluatePublishableReport({
+    researchSummary,
+    accountPlan,
+  });
   const sources = sortSources(input.sources);
   const facts = sortFacts(input.facts);
   const citations = sources.map((source) => ({
@@ -366,6 +376,7 @@ export function buildReportExportViewModel(input: {
   }));
 
   return {
+    publishMode: publishability.publishMode,
     reportTitle: context.report.companyName
       ? `${context.report.companyName} account plan`
       : `${context.report.canonicalDomain} account plan`,
@@ -391,9 +402,17 @@ export function buildReportExportViewModel(input: {
     overallMotion: {
       label: formatMotionLabel(accountPlan?.overallAccountMotion.recommendedMotion ?? "undetermined"),
       rationale:
-        accountPlan?.overallAccountMotion.rationale ??
+        publishability.publishMode === "grounded_fallback"
+          ? accountPlan?.groundedFallbackBrief?.opportunityHypothesisNote ??
+            "Account Atlas did not establish enough company-specific evidence to recommend workspace, API platform, or hybrid with confidence."
+          : accountPlan?.overallAccountMotion.rationale ??
         "The report does not yet contain enough evidence to recommend workspace, API platform, or hybrid with confidence.",
       citationLabels: getCitationLabels(accountPlan?.overallAccountMotion.evidenceSourceIds ?? []),
+    },
+    groundedFallbackBrief: {
+      summary: accountPlan?.groundedFallbackBrief?.summary ?? null,
+      opportunityHypothesisNote: accountPlan?.groundedFallbackBrief?.opportunityHypothesisNote ?? null,
+      citationLabels: getCitationLabels(accountPlan?.groundedFallbackBrief?.sourceIds ?? []),
     },
     growthPriorities:
       researchSummary?.growthPriorities.map((item) => ({
@@ -450,7 +469,11 @@ export function buildReportExportViewModel(input: {
       relevance: fact.relevance,
       citationLabels: getCitationLabels(fact.sourceIds),
     })),
-    topUseCases: sortUseCases(accountPlan?.topUseCases ?? accountPlan?.candidateUseCases.slice(0, 3) ?? []).map((useCase) => ({
+    topUseCases: sortUseCases(
+      publishability.publishMode === "grounded_fallback"
+        ? accountPlan?.topUseCases ?? []
+        : accountPlan?.topUseCases ?? accountPlan?.candidateUseCases.slice(0, 3) ?? [],
+    ).map((useCase) => ({
       priorityRank: useCase.priorityRank,
       departmentLabel: formatDepartmentLabel(useCase.department),
       workflowName: useCase.workflowName,

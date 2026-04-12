@@ -17,6 +17,8 @@ export type OptionalCoverageGap =
   | "missing_objections"
   | "missing_expansion_scenarios";
 
+export type PublishableReportMode = "full" | "grounded_fallback" | "insufficient";
+
 function hasSourceIds(sourceIds: number[] | null | undefined) {
   return Array.isArray(sourceIds) && sourceIds.length > 0;
 }
@@ -167,6 +169,83 @@ export function evaluateSellerFacingReport(input: {
     optionalGapKeys,
     readySectionKeys: getReadyReportSectionKeys(input),
     prioritizedUseCases,
+  };
+}
+
+function evaluateGroundedFallbackReport(input: {
+  researchSummary: ResearchSummary | null | undefined;
+  accountPlan: FinalAccountPlan | null | undefined;
+}) {
+  const prioritizedUseCases = getPrimaryUseCases(input.accountPlan);
+  const hasCompanySnapshot = Boolean(
+    input.researchSummary?.companyIdentity.companyName && hasSourceIds(input.researchSummary.companyIdentity.sourceIds),
+  );
+  const hasGroundedFallbackSummary = Boolean(
+    input.accountPlan?.publishMode === "grounded_fallback" &&
+      input.accountPlan.groundedFallbackBrief?.summary &&
+      hasSourceIds(input.accountPlan.groundedFallbackBrief.sourceIds),
+  );
+  const hasGroundedHypotheses =
+    prioritizedUseCases.length === 0 || prioritizedUseCases.every((useCase) => hasSourceIds(useCase.evidenceSourceIds));
+  const hasVisibleCitations = hasCompanySnapshot && hasGroundedFallbackSummary && hasGroundedHypotheses;
+  const missingRequirements: MinimumViableReportRequirement[] = [];
+
+  if (!hasGroundedFallbackSummary) {
+    missingRequirements.push("executive_summary");
+  }
+
+  if (!hasCompanySnapshot) {
+    missingRequirements.push("company_snapshot");
+  }
+
+  if (!hasVisibleCitations) {
+    missingRequirements.push("visible_citations");
+  }
+
+  return {
+    isSatisfied:
+      input.accountPlan?.publishMode === "grounded_fallback" &&
+      hasCompanySnapshot &&
+      hasGroundedFallbackSummary &&
+      hasVisibleCitations,
+    missingRequirements,
+    optionalGapKeys: [] as OptionalCoverageGap[],
+    readySectionKeys: getReadyReportSectionKeys(input),
+    prioritizedUseCases,
+  };
+}
+
+export function evaluatePublishableReport(input: {
+  researchSummary: ResearchSummary | null | undefined;
+  accountPlan: FinalAccountPlan | null | undefined;
+}) {
+  const sellerFacing = evaluateSellerFacingReport(input);
+
+  if (sellerFacing.isSatisfied) {
+    return {
+      ...sellerFacing,
+      publishMode: "full" as const satisfies PublishableReportMode,
+      isFullSellerFacing: true,
+      isGroundedFallback: false,
+    };
+  }
+
+  const groundedFallback = evaluateGroundedFallbackReport(input);
+
+  if (groundedFallback.isSatisfied) {
+    return {
+      ...groundedFallback,
+      publishMode: "grounded_fallback" as const satisfies PublishableReportMode,
+      isFullSellerFacing: false,
+      isGroundedFallback: true,
+    };
+  }
+
+  return {
+    ...(input.accountPlan?.publishMode === "grounded_fallback" ? groundedFallback : sellerFacing),
+    publishMode: "insufficient" as const satisfies PublishableReportMode,
+    isFullSellerFacing: false,
+    isGroundedFallback: false,
   };
 }
 

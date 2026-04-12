@@ -297,8 +297,12 @@ function createOpenAIStub(
           parsed: {
             companyName: "OpenAI",
             canonicalDomain: "openai.com",
+            relationshipToCanonicalDomain: null,
             archetype: "AI platform provider",
             businessModel: "API and enterprise software",
+            customerType: "Developers and enterprise teams",
+            offerings: "AI models, API access, and enterprise AI software",
+            sector: "Software",
             industry: "Artificial intelligence",
             publicCompany: false,
             headquarters: "San Francisco, California",
@@ -319,8 +323,12 @@ function createOpenAIStub(
             entityResolution: {
               companyName: "OpenAI",
               canonicalDomain: "openai.com",
+              relationshipToCanonicalDomain: null,
               archetype: "AI platform provider",
               businessModel: "API and enterprise software",
+              customerType: "Developers and enterprise teams",
+              offerings: "AI models, API access, and enterprise AI software",
+              sector: "Software",
               industry: "Artificial intelligence",
               publicCompany: false,
               headquarters: "San Francisco, California",
@@ -390,11 +398,17 @@ function createOpenAIStub(
       const parsed: ResearchSummary = {
         companyIdentity: {
           companyName: "OpenAI",
+          canonicalDomain: "openai.com",
+          relationshipToCanonicalDomain: null,
           archetype: "AI platform provider",
           businessModel: "API and enterprise software",
+          customerType: "Developers and enterprise teams",
+          offerings: "AI models, API access, and enterprise AI software",
+          sector: "Software",
           industry: "Artificial intelligence",
           publicCompany: false,
           headquarters: "San Francisco, California",
+          confidence: 92,
           sourceIds: [1],
         },
         growthPriorities: [
@@ -449,6 +463,238 @@ function createOpenAIStub(
 }
 
 describe("createResearchPipelineService", () => {
+  it("resolves gm.com to a clean company name instead of leaving a raw acronym when better evidence exists", async () => {
+    const stub = createRepositoryStub();
+    stub.context.report.normalizedInputUrl = "https://gm.com/";
+    stub.context.report.canonicalDomain = "gm.com";
+    stub.sources[0] = {
+      ...stub.sources[0],
+      url: "https://gm.com/",
+      normalizedUrl: "https://gm.com/",
+      canonicalUrl: "https://gm.com/",
+      canonicalDomain: "gm.com",
+      title: "General Motors: Pushing the Limits of Transportation & Technology",
+      textContent: "General Motors designs, builds, and sells vehicles and software-enabled mobility products.",
+      markdownContent:
+        "# General Motors\n\nGeneral Motors designs, builds, and sells vehicles and software-enabled mobility products.",
+    };
+
+    const service = createResearchPipelineService({
+      repository: stub.repository,
+      openAIClient: {
+        isConfigured: () => true,
+        createVectorStore: async () => {
+          throw new Error("Not needed");
+        },
+        uploadFile: async () => {
+          throw new Error("Not needed");
+        },
+        attachFileToVectorStoreAndPoll: async () => {
+          throw new Error("Not needed");
+        },
+        parseStructuredOutput: async ({ schemaName }) => {
+          if (schemaName !== "entity_resolution") {
+            throw new Error(`Unexpected schema ${schemaName}`);
+          }
+
+          return {
+            responseId: "resp_gm_entity",
+            parsed: {
+              companyName: "GM",
+              canonicalDomain: "gm.com",
+              relationshipToCanonicalDomain: null,
+              archetype: "Automotive manufacturer",
+              businessModel: "Manufactures and sells vehicles, fleet solutions, and related services",
+              customerType: "Consumers, dealers, and commercial fleets",
+              offerings: "Vehicles, financing, software, and mobility services",
+              sector: "Automotive",
+              industry: "Automotive",
+              publicCompany: true,
+              headquarters: "Detroit, Michigan",
+              confidence: 91,
+              sourceIds: [1],
+            },
+            outputText: "GM resolved from official sources.",
+            rawResponse: { id: "resp_gm_entity", output: [], usage: {} },
+            webSearchSources: [],
+            fileSearchResults: [],
+          } as never;
+        },
+      },
+    });
+
+    const message = await service.resolveCompanyEntity(stub.context);
+
+    expect(message).toContain("General Motors");
+    expect(stub.context.report.companyName).toBe("General Motors");
+    expect(stub.context.run.researchSummary?.companyIdentity.companyName).toBe("General Motors");
+    expect(stub.context.run.researchSummary?.companyIdentity.businessModel).toContain("vehicles");
+    expect(stub.context.run.researchSummary?.companyIdentity.confidence).toBe(91);
+    expect(stub.events.some((event) => event.eventType === "research.entity_resolution.gate_passed")).toBe(true);
+  });
+
+  it("broadens retrieval and retries entity resolution for bk.com before allowing the report to proceed", async () => {
+    const stub = createRepositoryStub();
+    stub.context.report.normalizedInputUrl = "https://bk.com/";
+    stub.context.report.canonicalDomain = "bk.com";
+    stub.sources[0] = {
+      ...stub.sources[0],
+      url: "https://bk.com/",
+      normalizedUrl: "https://bk.com/",
+      canonicalUrl: "https://bk.com/",
+      canonicalDomain: "bk.com",
+      title: "BK",
+      textContent: "Welcome to BK.",
+      markdownContent: "# BK\n\nWelcome to BK.",
+    };
+
+    let entityResolutionAttempts = 0;
+
+    const service = createResearchPipelineService({
+      repository: stub.repository,
+      openAIClient: {
+        isConfigured: () => true,
+        createVectorStore: async () => {
+          throw new Error("Not needed");
+        },
+        uploadFile: async () => {
+          throw new Error("Not needed");
+        },
+        attachFileToVectorStoreAndPoll: async () => {
+          throw new Error("Not needed");
+        },
+        parseStructuredOutput: async ({ schemaName }) => {
+          if (schemaName === "entity_resolution") {
+            entityResolutionAttempts += 1;
+
+            if (entityResolutionAttempts === 1) {
+              return {
+                responseId: "resp_bk_entity_1",
+                parsed: {
+                  companyName: "BK",
+                  canonicalDomain: "bk.com",
+                  relationshipToCanonicalDomain: null,
+                  archetype: "Restaurant brand",
+                  businessModel: null,
+                  customerType: null,
+                  offerings: null,
+                  sector: null,
+                  industry: null,
+                  publicCompany: null,
+                  headquarters: null,
+                  confidence: 52,
+                  sourceIds: [1],
+                },
+                outputText: "Initial BK resolution is ambiguous.",
+                rawResponse: { id: "resp_bk_entity_1", output: [], usage: {} },
+                webSearchSources: [],
+                fileSearchResults: [],
+              } as never;
+            }
+
+            return {
+              responseId: "resp_bk_entity_2",
+              parsed: {
+                companyName: "Burger King",
+                canonicalDomain: "bk.com",
+                relationshipToCanonicalDomain: "Brand of Restaurant Brands International Inc.",
+                archetype: "Global quick-service restaurant brand",
+                businessModel: "Franchised quick-service restaurant brand",
+                customerType: "Consumers and franchise operators",
+                offerings: "Burgers, chicken, fries, beverages, and restaurant franchising",
+                sector: "Consumer",
+                industry: "Quick-service restaurants",
+                publicCompany: false,
+                headquarters: "Miami, Florida",
+                confidence: 93,
+                sourceIds: [1, 2, 3],
+              },
+              outputText: "Burger King resolved with parent context.",
+              rawResponse: { id: "resp_bk_entity_2", output: [], usage: {} },
+              webSearchSources: [],
+              fileSearchResults: [],
+            } as never;
+          }
+
+          if (schemaName === "entity_resolution_search") {
+            return {
+              responseId: "resp_bk_search",
+              parsed: {
+                entityResolution: {
+                  companyName: "Burger King",
+                  canonicalDomain: "bk.com",
+                  relationshipToCanonicalDomain: "Brand of Restaurant Brands International Inc.",
+                  archetype: "Global quick-service restaurant brand",
+                  businessModel: "Franchised quick-service restaurant brand",
+                  customerType: "Consumers and franchise operators",
+                  offerings: "Burgers, chicken, fries, beverages, and restaurant franchising",
+                  sector: "Consumer",
+                  industry: "Quick-service restaurants",
+                  publicCompany: false,
+                  headquarters: "Miami, Florida",
+                  confidence: 89,
+                  sourceUrls: [
+                    "https://www.bk.com/about-us",
+                    "https://www.rbi.com/English/brands/default.aspx",
+                  ],
+                },
+                discoveredSources: [
+                  {
+                    url: "https://www.bk.com/about-us",
+                    title: "About Burger King",
+                    sourceType: "about_page",
+                    sourceTier: "primary",
+                    publishedAt: null,
+                    summary: "Burger King is a global quick-service restaurant brand known for flame-grilled burgers.",
+                    whyItMatters: "Confirms the clean display name, industry, and consumer-facing restaurant business.",
+                  },
+                  {
+                    url: "https://www.rbi.com/English/brands/default.aspx",
+                    title: "Our Brands | Restaurant Brands International",
+                    sourceType: "investor_relations_page",
+                    sourceTier: "primary",
+                    publishedAt: null,
+                    summary: "Restaurant Brands International lists Burger King among its core restaurant brands.",
+                    whyItMatters: "Provides official parent-brand context for the bk.com entity.",
+                  },
+                ],
+                retryRationale:
+                  "Official about and parent pages clarify that bk.com represents Burger King, a Restaurant Brands International brand.",
+              },
+              outputText: "Broadened identity retrieval completed.",
+              rawResponse: { id: "resp_bk_search", output: [], usage: {} },
+              webSearchSources: [
+                { url: "https://www.bk.com/about-us" },
+                { url: "https://www.rbi.com/English/brands/default.aspx" },
+              ],
+              fileSearchResults: [],
+            } as never;
+          }
+
+          throw new Error(`Unexpected schema ${schemaName}`);
+        },
+      },
+    });
+
+    const message = await service.resolveCompanyEntity(stub.context);
+
+    expect(message).toContain("Burger King");
+    expect(message).toContain("broadening identity-source retrieval");
+    expect(entityResolutionAttempts).toBe(2);
+    expect(stub.context.report.companyName).toBe("Burger King");
+    expect(stub.context.run.researchSummary?.companyIdentity.companyName).toBe("Burger King");
+    expect(stub.context.run.researchSummary?.companyIdentity.relationshipToCanonicalDomain).toContain(
+      "Restaurant Brands International",
+    );
+    expect(stub.context.run.researchSummary?.companyIdentity.industry).toBe("Quick-service restaurants");
+    expect(stub.context.run.researchSummary?.companyIdentity.confidence).toBe(93);
+    expect(stub.sources.some((source) => source.title === "About Burger King")).toBe(true);
+    expect(
+      stub.events.some((event) => event.eventType === "research.entity_resolution.low_confidence"),
+    ).toBe(true);
+    expect(stub.events.some((event) => event.eventType === "research.entity_resolution.gate_passed")).toBe(true);
+  });
+
   it("persists external sources, facts, and a research summary with known source IDs", async () => {
     const stub = createRepositoryStub();
     const telemetry = {
@@ -482,6 +728,12 @@ describe("createResearchPipelineService", () => {
     expect(stub.context.run.researchSummary?.companyIdentity.companyName).toBe("OpenAI");
     expect(factPacket.packetType).toBe("fact_packet");
     expect(factPacket.evidence).toHaveLength(1);
+    expect(factPacket.companyProfile.companyDescription.value).toContain("OpenAI");
+    expect(factPacket.companyProfile.industry.value).toContain("AI");
+    expect(factPacket.companyProfile.productsServices.value).toContain("AI");
+    expect(factPacket.companyProfile.operatingModel.value).toContain("platform");
+    expect(factPacket.companyProfile.targetCustomers.value).toContain("enterprise");
+    expect(factPacket.companyProfile.keyPublicSignals.length).toBeGreaterThan(0);
     expect(stub.events.some((event) => event.eventType === "research.summary.completed")).toBe(true);
     expect(stub.artifacts).toHaveLength(1);
     expect(telemetry.createVectorStoreCalls).toBe(1);
@@ -527,6 +779,134 @@ describe("createResearchPipelineService", () => {
         maxAttempts: 1,
       },
     ]);
+  });
+
+  it("builds research-summary prompts from the structured fact packet instead of loose source blobs", async () => {
+    const stub = createRepositoryStub();
+    const capturedInputs = new Map<string, Record<string, unknown>>();
+    const service = createResearchPipelineService({
+      repository: stub.repository,
+      openAIClient: {
+        isConfigured: () => true,
+        createVectorStore: async () => {
+          throw new Error("Not needed");
+        },
+        uploadFile: async () => {
+          throw new Error("Not needed");
+        },
+        attachFileToVectorStoreAndPoll: async () => {
+          throw new Error("Not needed");
+        },
+        parseStructuredOutput: async ({ schemaName, input }) => {
+          capturedInputs.set(schemaName, JSON.parse(String(input)) as Record<string, unknown>);
+
+          if (schemaName === "fact_normalization") {
+            return {
+              responseId: "resp_facts",
+              parsed: {
+                facts: [
+                  {
+                    claim: "OpenAI publicly positions itself as an AI platform for developers and enterprises.",
+                    rationale: "This is directly stated in company materials.",
+                    section: "fact-base",
+                    classification: "fact",
+                    confidence: 91,
+                    freshness: "current",
+                    sentiment: "neutral",
+                    relevance: 95,
+                    evidenceSnippet: "OpenAI builds AI models and developer platforms.",
+                    sourceIds: [1],
+                  },
+                ],
+              },
+              outputText: "Facts completed.",
+              rawResponse: { id: "resp_facts", output: [], usage: {} },
+              webSearchSources: [],
+              fileSearchResults: [],
+            } as never;
+          }
+
+          if (schemaName === "research_summary") {
+            return {
+              responseId: "resp_summary",
+              parsed: {
+                companyIdentity: {
+                  companyName: "OpenAI",
+                  canonicalDomain: "openai.com",
+                  relationshipToCanonicalDomain: null,
+                  archetype: "AI platform provider",
+                  businessModel: "API and enterprise software",
+                  customerType: "Developers and enterprise teams",
+                  offerings: "AI models, API access, and enterprise AI software",
+                  sector: "Software",
+                  industry: "Artificial intelligence",
+                  publicCompany: false,
+                  headquarters: "San Francisco, California",
+                  confidence: 92,
+                  sourceIds: [1],
+                },
+                growthPriorities: [],
+                aiMaturityEstimate: {
+                  level: "advanced",
+                  rationale: "Platform and product evidence are present in the fact packet.",
+                  sourceIds: [1],
+                },
+                regulatorySensitivity: {
+                  level: "low",
+                  rationale: "Trust signals remain limited in this narrow fixture.",
+                  sourceIds: [1],
+                },
+                notableProductSignals: [],
+                notableHiringSignals: [],
+                notableTrustSignals: [],
+                complaintThemes: [],
+                leadershipSocialThemes: [],
+                researchCompletenessScore: 70,
+                confidenceBySection: [
+                  {
+                    section: "company-brief",
+                    confidence: 82,
+                    rationale: "The fact packet grounds the company profile.",
+                  },
+                ],
+                evidenceGaps: ["Limited additional trust evidence."],
+                overallConfidence: "medium",
+                sourceIds: [1],
+              },
+              outputText: "Summary completed.",
+              rawResponse: { id: "resp_summary", output: [], usage: {} },
+              webSearchSources: [],
+              fileSearchResults: [],
+            } as never;
+          }
+
+          throw new Error(`Unexpected schema ${schemaName}`);
+        },
+      },
+    });
+
+    await service.buildFactBase(stub.context);
+    await service.generateResearchSummary(stub.context);
+
+    const summaryInput = capturedInputs.get("research_summary");
+
+    expect(summaryInput?.factPacket).toBeDefined();
+    expect(summaryInput).not.toHaveProperty("sourceRegistry");
+    expect(summaryInput).not.toHaveProperty("facts");
+    expect(
+      (
+        summaryInput?.factPacket as {
+          companyProfile: { companyDescription: { value: string }; keyPublicSignals: Array<{ summary: string }> };
+        }
+      ).companyProfile.companyDescription.value,
+    ).toContain("OpenAI");
+    expect(
+      (
+        summaryInput?.factPacket as {
+          companyProfile: { productsServices: { value: string | null } };
+        }
+      ).companyProfile.productsServices.value,
+    ).toBeTruthy();
   });
 
   it("skips research work cleanly when OpenAI is not configured", async () => {

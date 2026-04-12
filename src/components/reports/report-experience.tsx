@@ -30,6 +30,7 @@ import type {
   ReportDocument,
   ReportFactRecord,
   ReportSectionKey,
+  ReportRunSummary,
   ReportStatusShell,
 } from "@/lib/types/report";
 import { cn } from "@/lib/utils";
@@ -42,13 +43,12 @@ type ReportExperienceProps = {
 
 type ReportMode = "brief" | "evidence" | "build";
 
-const reportModes: ReadonlyArray<{
+const primaryReportModes: ReadonlyArray<{
   id: ReportMode;
   label: string;
 }> = [
   { id: "brief", label: "Brief" },
   { id: "evidence", label: "Evidence" },
-  { id: "build", label: "Build details" },
 ] as const;
 
 const reportAnchorItemsByMode: Record<
@@ -169,7 +169,7 @@ function confidenceTone(confidence: number | null) {
   return "text-destructive";
 }
 
-function formatReportStatusLabel(status: string) {
+function formatReportStatusLabel(status: string, researchCompletenessScore: number | null = null) {
   switch (status) {
     case "queued":
       return "Queued";
@@ -178,7 +178,9 @@ function formatReportStatusLabel(status: string) {
     case "ready":
       return "Ready";
     case "ready_with_limited_coverage":
-      return "Ready with limited coverage";
+      return researchCompletenessScore !== null && researchCompletenessScore >= 75
+        ? "Ready with focused coverage"
+        : "Ready with limited coverage";
     case "failed":
       return "Failed";
     default:
@@ -186,25 +188,48 @@ function formatReportStatusLabel(status: string) {
   }
 }
 
-function getExportStatusLabel(input: {
-  artifactAvailable: boolean;
+function formatHeroStatusLabel(status: string) {
+  if (status === "ready" || status === "ready_with_limited_coverage") {
+    return "Report ready";
+  }
+
+  return formatReportStatusLabel(status);
+}
+
+function getExportButtonState(input: {
+  artifactDownloadPath: string | null;
   artifactType: "markdown" | "pdf";
+  shareId: string;
   isTerminalReport: boolean;
-  runStatus: string | null;
+  run: ReportRunSummary | null;
 }) {
-  if (input.artifactAvailable) {
-    return input.artifactType === "pdf" ? "PDF" : "Markdown";
+  const exportLabel = input.artifactType === "pdf" ? "PDF" : "Markdown";
+  const exportStepKey = input.artifactType === "pdf" ? "export_pdf" : "export_markdown";
+  const exportStep = input.run?.progress.steps.find((step) => step.key === exportStepKey) ?? null;
+  const canGenerateOnDemand =
+    input.isTerminalReport && Boolean(input.run) && (input.run?.status === "completed" || exportStep?.status === "completed");
+
+  if (input.artifactDownloadPath) {
+    return {
+      disabled: false,
+      href: input.artifactDownloadPath,
+      label: exportLabel,
+    };
   }
 
-  if (input.runStatus === "completed") {
-    return input.artifactType === "pdf" ? "PDF unavailable" : "Markdown unavailable";
+  if (canGenerateOnDemand) {
+    return {
+      disabled: false,
+      href: `/api/reports/${input.shareId}/artifacts/${input.artifactType}`,
+      label: `Generate ${exportLabel}`,
+    };
   }
 
-  if (input.isTerminalReport) {
-    return input.artifactType === "pdf" ? "PDF generating" : "Markdown generating";
-  }
-
-  return input.artifactType === "pdf" ? "PDF pending" : "Markdown pending";
+  return {
+    disabled: true,
+    href: null,
+    label: `Preparing ${exportLabel}`,
+  };
 }
 
 function hasDownloadableArtifact(
@@ -425,6 +450,7 @@ export function ReportExperience({
   const currentRun = document.currentRun;
   const researchSummary = currentRun?.researchSummary ?? null;
   const accountPlan = currentRun?.accountPlan ?? null;
+  const isGroundedFallbackBrief = accountPlan?.publishMode === "grounded_fallback";
   const topUseCaseKeys = new Set(
     accountPlan?.topUseCases.map((useCase) => `${useCase.priorityRank}-${useCase.workflowName}`) ?? [],
   );
@@ -432,7 +458,9 @@ export function ReportExperience({
     accountPlan?.candidateUseCases.filter(
       (useCase) => !topUseCaseKeys.has(`${useCase.priorityRank}-${useCase.workflowName}`),
     ) ?? [];
-  const topOpportunity = accountPlan?.topUseCases[0] ?? accountPlan?.candidateUseCases[0] ?? null;
+  const topOpportunity = isGroundedFallbackBrief
+    ? accountPlan?.topUseCases[0] ?? null
+    : accountPlan?.topUseCases[0] ?? accountPlan?.candidateUseCases[0] ?? null;
   const markdownArtifact = document.artifacts.find((artifact) => artifact.artifactType === "markdown") ?? null;
   const pdfArtifact = document.artifacts.find((artifact) => artifact.artifactType === "pdf") ?? null;
   const downloadableMarkdownArtifact = markdownArtifact?.downloadPath ? markdownArtifact : null;
@@ -444,11 +472,13 @@ export function ReportExperience({
     ? formatMotionLabel(accountPlan.overallAccountMotion.recommendedMotion)
     : "Pending";
   const companyDisplayName =
-    document.report.companyName ?? researchSummary?.companyIdentity.companyName ?? document.report.canonicalDomain;
-  const primaryStatusLabel = formatReportStatusLabel(liveReportStatus);
+    researchSummary?.companyIdentity.companyName ?? document.report.companyName ?? document.report.canonicalDomain;
+  const primaryStatusLabel = formatReportStatusLabel(liveReportStatus, researchCompleteness);
+  const heroStatusLabel = formatHeroStatusLabel(liveReportStatus);
   const isBuildingReport = liveReportStatus === "queued" || liveReportStatus === "running";
   const hasResearchContent = Boolean(researchSummary || document.facts.length > 0);
   const hasPlanningContent = Boolean(accountPlan && topOpportunity && accountPlan.overallAccountMotion.rationale);
+  const hasGroundedHypothesisContent = Boolean(isGroundedFallbackBrief && (accountPlan?.candidateUseCases.length ?? 0) > 0);
   const hasStakeholderContent = Boolean(accountPlan?.stakeholderHypotheses.length);
   const hasDiscoveryContent = Boolean(
     accountPlan && (accountPlan.objectionsAndRebuttals.length > 0 || accountPlan.discoveryQuestions.length > 0),
@@ -459,7 +489,7 @@ export function ReportExperience({
   );
   const hasSourcesContent = document.sources.length > 0;
   const showResearchSection = !isBuildingReport || hasResearchContent;
-  const showUseCasesSection = !isBuildingReport || hasPlanningContent;
+  const showUseCasesSection = !isBuildingReport || hasPlanningContent || hasGroundedHypothesisContent;
   const showStakeholdersSection = !isBuildingReport || hasStakeholderContent || hasDiscoveryContent;
   const showPilotPlanSection = !isBuildingReport || hasPilotPlanContent;
   const showExpansionSection = !isBuildingReport || hasExpansionContent;
@@ -506,7 +536,7 @@ export function ReportExperience({
   });
   const activeAnchorItems = reportAnchorItemsByMode[reportMode];
   const hasSelectedSources = selectedSourceIds.length > 0;
-  const liveRun = status?.isTerminal ? document.currentRun ?? status.currentRun ?? currentRun : status?.currentRun ?? currentRun;
+  const liveRun = status?.isTerminal ? status.currentRun ?? document.currentRun ?? currentRun : status?.currentRun ?? currentRun;
   const buildProgressPercent = liveRun?.progressPercent ?? null;
   const buildStepLabel = liveRun?.stepLabel ?? null;
   const lastUpdatedAt =
@@ -514,14 +544,31 @@ export function ReportExperience({
     status?.report.updatedAt ??
     document.currentRun?.updatedAt ??
     document.report.updatedAt;
+  const isTerminalReport = liveReportStatus === "ready" || liveReportStatus === "ready_with_limited_coverage";
   const showDesktopSourceRail = hasSelectedSources;
   const retryHref = `/?url=${encodeURIComponent(document.report.normalizedInputUrl)}`;
+  const markdownButtonState = getExportButtonState({
+    artifactDownloadPath: downloadableMarkdownArtifact?.downloadPath ?? null,
+    artifactType: "markdown",
+    shareId,
+    isTerminalReport,
+    run: liveRun,
+  });
+  const pdfButtonState = getExportButtonState({
+    artifactDownloadPath: downloadablePdfArtifact?.downloadPath ?? null,
+    artifactType: "pdf",
+    shareId,
+    isTerminalReport,
+    run: liveRun,
+  });
   const briefPendingSectionTargets = pendingSectionTargets.filter((section) => section.id !== "research");
   const showBriefReadiness = isBuildingReport && briefPendingSectionTargets.length > 0;
-  const showMotionSummaryCard = Boolean(accountPlan);
+  const showMotionSummaryCard = Boolean(accountPlan && !isGroundedFallbackBrief);
   const showEvidenceSummaryCard = researchCompleteness !== null || document.result.hasThinEvidence || !isBuildingReport;
-  const showTopOpportunitySummaryCard = Boolean(topOpportunity);
-  const showSummaryHighlights = showMotionSummaryCard || showEvidenceSummaryCard || showTopOpportunitySummaryCard;
+  const showTopOpportunitySummaryCard = Boolean(topOpportunity && !isGroundedFallbackBrief);
+  const showGroundedBriefSummaryCard = Boolean(isGroundedFallbackBrief && accountPlan?.groundedFallbackBrief?.summary);
+  const showSummaryHighlights =
+    showMotionSummaryCard || showEvidenceSummaryCard || showTopOpportunitySummaryCard || showGroundedBriefSummaryCard;
 
   useEffect(() => {
     if (!status?.isTerminal) {
@@ -631,13 +678,8 @@ export function ReportExperience({
                   </Badge>
                 ) : null}
                 <Badge className="rounded-full px-4 py-1.5" variant="outline">
-                  {primaryStatusLabel}
+                  {heroStatusLabel}
                 </Badge>
-                {document.result.hasThinEvidence ? (
-                  <Badge className="rounded-full px-4 py-1.5" variant="outline">
-                    Thin evidence
-                  </Badge>
-                ) : null}
               </div>
             ) : null}
           </div>
@@ -700,40 +742,30 @@ export function ReportExperience({
                     </div>
                   </details>
                   <div className="flex flex-wrap gap-2">
-                    {downloadableMarkdownArtifact ? (
+                    {!markdownButtonState.disabled && markdownButtonState.href ? (
                       <Button type="button" size="sm" asChild>
-                        <a href={downloadableMarkdownArtifact.downloadPath ?? undefined}>
+                        <a href={markdownButtonState.href}>
                           <Download className="h-4 w-4" />
-                          Markdown
+                          {markdownButtonState.label}
                         </a>
                       </Button>
                     ) : (
                       <Button type="button" size="sm" variant="outline" disabled>
                         <Download className="h-4 w-4" />
-                        {getExportStatusLabel({
-                          artifactAvailable: false,
-                          artifactType: "markdown",
-                          isTerminalReport: liveReportStatus === "ready" || liveReportStatus === "ready_with_limited_coverage",
-                          runStatus: liveRun?.status ?? null,
-                        })}
+                        {markdownButtonState.label}
                       </Button>
                     )}
-                    {downloadablePdfArtifact ? (
+                    {!pdfButtonState.disabled && pdfButtonState.href ? (
                       <Button type="button" size="sm" variant="outline" asChild>
-                        <a href={downloadablePdfArtifact.downloadPath ?? undefined}>
+                        <a href={pdfButtonState.href}>
                           <Download className="h-4 w-4" />
-                          PDF
+                          {pdfButtonState.label}
                         </a>
                       </Button>
                     ) : (
                       <Button type="button" size="sm" variant="outline" disabled>
                         <Download className="h-4 w-4" />
-                        {getExportStatusLabel({
-                          artifactAvailable: false,
-                          artifactType: "pdf",
-                          isTerminalReport: liveReportStatus === "ready" || liveReportStatus === "ready_with_limited_coverage",
-                          runStatus: liveRun?.status ?? null,
-                        })}
+                        {pdfButtonState.label}
                       </Button>
                     )}
                     {currentRun?.status === "failed" ? (
@@ -749,7 +781,7 @@ export function ReportExperience({
 
                 {currentRun?.status === "completed" && downloadableMarkdownArtifact && !downloadablePdfArtifact ? (
                   <p className="text-sm leading-7 text-foreground/70">
-                    PDF export is unavailable for this run. The Markdown export and shareable report remain available.
+                    PDF export can be generated on demand for this run. The Markdown export and shareable report remain available.
                   </p>
                 ) : null}
               </div>
@@ -787,6 +819,16 @@ export function ReportExperience({
                       </div>
                       <div className="mt-2 font-medium text-foreground">{topOpportunity?.workflowName}</div>
                       <p className="mt-2 text-sm leading-6 text-foreground/70">{topOpportunity?.summary}</p>
+                    </div>
+                  ) : null}
+                  {showGroundedBriefSummaryCard ? (
+                    <div className="rounded-[1.5rem] border border-border/50 bg-background/68 p-4">
+                      <div className="text-[11px] font-medium uppercase tracking-[0.22em] text-muted-foreground">
+                        Grounded brief
+                      </div>
+                      <p className="mt-2 text-sm leading-6 text-foreground/70">
+                        {accountPlan?.groundedFallbackBrief?.summary}
+                      </p>
                     </div>
                   ) : null}
                 </div>
@@ -836,7 +878,7 @@ export function ReportExperience({
 
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div className="flex flex-wrap items-center gap-2">
-                  {reportModes.map((mode) => (
+                  {primaryReportModes.map((mode) => (
                     <Button
                       key={mode.id}
                       type="button"
@@ -848,18 +890,33 @@ export function ReportExperience({
                     </Button>
                   ))}
                 </div>
-                {hasSelectedSources ? (
+                <div className="flex flex-wrap items-center gap-2">
                   <Button
                     type="button"
-                    variant="outline"
                     size="sm"
-                    className="xl:hidden"
-                    onClick={() => setIsMobileSourcePanelOpen(true)}
+                    variant="outline"
+                    className={cn(
+                      reportMode === "build"
+                        ? "text-foreground"
+                        : "border-transparent bg-transparent text-foreground/70 hover:border-border/50",
+                    )}
+                    onClick={handleOpenBuildDetails}
                   >
-                    <BookOpenText className="h-4 w-4" />
-                    Sources
+                    Build details
                   </Button>
-                ) : null}
+                  {hasSelectedSources ? (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="xl:hidden"
+                      onClick={() => setIsMobileSourcePanelOpen(true)}
+                    >
+                      <BookOpenText className="h-4 w-4" />
+                      Sources
+                    </Button>
+                  ) : null}
+                </div>
               </div>
               <div className="flex min-w-max items-center gap-2">
                 <span className="hidden pl-2 text-[11px] font-medium uppercase tracking-[0.22em] text-muted-foreground sm:inline-flex">
@@ -893,7 +950,7 @@ export function ReportExperience({
                 description="Seller-ready summary of account context, recommended motion, and the main evidence caveats."
               >
                 <div className={cn("grid gap-3.5", accountPlan ? "lg:grid-cols-[1.15fr_0.85fr]" : "lg:grid-cols-1")}>
-                  {accountPlan ? (
+                  {accountPlan && !isGroundedFallbackBrief ? (
                     <Card className="border-strong/70 bg-card/80 shadow-panel">
                       <CardHeader className="space-y-3">
                         <CardTitle className="flex items-center gap-2 text-2xl">
@@ -924,6 +981,45 @@ export function ReportExperience({
                         ) : null}
                         <EvidencePills
                           sourceIds={accountPlan.overallAccountMotion.evidenceSourceIds}
+                          sources={document.sources}
+                          onSelectSources={handleSelectSources}
+                        />
+                      </CardContent>
+                    </Card>
+                  ) : null}
+
+                  {accountPlan && isGroundedFallbackBrief ? (
+                    <Card className="border-strong/70 bg-card/80 shadow-panel">
+                      <CardHeader className="space-y-3">
+                        <CardTitle className="flex items-center gap-2 text-2xl">
+                          <Target className="h-5 w-5 text-primary" />
+                          Grounded brief
+                        </CardTitle>
+                      </CardHeader>
+                      <CardContent className="space-y-4">
+                        <div className="flex flex-wrap items-center gap-3">
+                          <Badge className="rounded-full px-4 py-1.5 uppercase" variant="secondary">
+                            Focused publish mode
+                          </Badge>
+                          {researchSummary ? (
+                            <span className={cn("text-sm font-medium", confidenceTone(researchSummary.researchCompletenessScore))}>
+                              Evidence coverage {researchSummary.researchCompletenessScore}/100
+                            </span>
+                          ) : null}
+                        </div>
+                        <p className="text-sm leading-7 text-muted-foreground">
+                          {accountPlan.groundedFallbackBrief?.summary}
+                        </p>
+                        {accountPlan.groundedFallbackBrief?.opportunityHypothesisNote ? (
+                          <div className="rounded-3xl border border-border/70 bg-background/75 p-4">
+                            <div className="font-medium text-foreground">Opportunity hypotheses</div>
+                            <p className="mt-2 text-sm leading-7 text-muted-foreground">
+                              {accountPlan.groundedFallbackBrief.opportunityHypothesisNote}
+                            </p>
+                          </div>
+                        ) : null}
+                        <EvidencePills
+                          sourceIds={accountPlan.groundedFallbackBrief?.sourceIds ?? researchSummary?.companyIdentity.sourceIds ?? []}
                           sources={document.sources}
                           onSelectSources={handleSelectSources}
                         />
@@ -1017,7 +1113,7 @@ export function ReportExperience({
                 </Card>
               ) : null}
 
-              {accountPlan ? (
+              {accountPlan && !isGroundedFallbackBrief ? (
                 <ReportSection
                   id="use-cases"
                   eyebrow="Brief"
@@ -1196,6 +1292,50 @@ export function ReportExperience({
                         </div>
                       </details>
                     ) : null}
+                  </div>
+                </ReportSection>
+              ) : null}
+
+              {accountPlan && isGroundedFallbackBrief && accountPlan.candidateUseCases.length > 0 ? (
+                <ReportSection
+                  id="use-cases"
+                  eyebrow="Brief"
+                  title="Grounded opportunity hypotheses"
+                  description="These hypotheses cleared the minimum grounding bar, but they remain lower-confidence than a normal prioritized opportunity set."
+                >
+                  <div className="grid gap-4 lg:grid-cols-3">
+                    {accountPlan.candidateUseCases.map((useCase) => (
+                      <Card key={`hypothesis-${useCase.workflowName}`} className="border-strong/70 bg-card/80 shadow-none">
+                        <CardHeader className="space-y-3">
+                          <div className="flex items-center justify-between gap-3">
+                            <Badge variant="secondary" className="rounded-full px-3 py-1">
+                              Hypothesis
+                            </Badge>
+                            <Badge variant="outline" className="rounded-full px-3 py-1">
+                              {useCase.scorecard.evidenceConfidence}/100 evidence
+                            </Badge>
+                          </div>
+                          <CardTitle className="text-xl">{useCase.workflowName}</CardTitle>
+                          <p className="text-sm text-muted-foreground">{formatDepartmentLabel(useCase.department)}</p>
+                        </CardHeader>
+                        <CardContent className="space-y-4 text-sm leading-7 text-muted-foreground">
+                          <p>{useCase.summary}</p>
+                          <div className="rounded-3xl border border-border/70 bg-background/70 p-4">
+                            <div className="font-medium text-foreground">Why it may matter</div>
+                            <p className="mt-2">{useCase.whyNow}</p>
+                          </div>
+                          <div className="rounded-3xl border border-border/70 bg-background/70 p-4">
+                            <div className="font-medium text-foreground">Potential outcome</div>
+                            <p className="mt-2">{useCase.expectedOutcome}</p>
+                          </div>
+                          <EvidencePills
+                            sourceIds={useCase.evidenceSourceIds}
+                            sources={document.sources}
+                            onSelectSources={handleSelectSources}
+                          />
+                        </CardContent>
+                      </Card>
+                    ))}
                   </div>
                 </ReportSection>
               ) : null}

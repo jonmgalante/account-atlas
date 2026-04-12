@@ -55,8 +55,19 @@ export function serializeReportToMarkdown(model: ReportExportViewModel) {
 
   lines.push("## Overview");
   lines.push("");
-  lines.push(`- Overall motion: **${model.overallMotion.label}**${renderCitationLabels(model.overallMotion.citationLabels)}`);
-  lines.push(`- Motion rationale: ${model.overallMotion.rationale}`);
+  if (model.publishMode === "grounded_fallback") {
+    lines.push(`- Publish mode: **Grounded fallback brief**`);
+    lines.push(
+      `- Grounded brief summary: ${model.groundedFallbackBrief.summary ?? "No grounded fallback summary was persisted."}${renderCitationLabels(model.groundedFallbackBrief.citationLabels)}`,
+    );
+
+    if (model.groundedFallbackBrief.opportunityHypothesisNote) {
+      lines.push(`- Opportunity hypothesis note: ${model.groundedFallbackBrief.opportunityHypothesisNote}`);
+    }
+  } else {
+    lines.push(`- Overall motion: **${model.overallMotion.label}**${renderCitationLabels(model.overallMotion.citationLabels)}`);
+    lines.push(`- Motion rationale: ${model.overallMotion.rationale}`);
+  }
   lines.push(`- Research completeness: ${model.researchCompletenessScore ?? "Pending"}`);
   lines.push(`- Overall confidence: ${model.overallConfidence ?? "Pending"}`);
   lines.push(`- Company archetype: ${model.companyIdentity.archetype ?? "Pending"}${renderCitationLabels(model.companyIdentity.citationLabels)}`);
@@ -161,9 +172,9 @@ export function serializeReportToMarkdown(model: ReportExportViewModel) {
     lines.push("");
   }
 
-  lines.push("## Use Cases");
+  lines.push(model.publishMode === "grounded_fallback" ? "## Opportunity Hypotheses" : "## Use Cases");
   lines.push("");
-  lines.push("### Top 3 prioritized");
+  lines.push(model.publishMode === "grounded_fallback" ? "### Grounded hypotheses" : "### Top 3 prioritized");
   lines.push("");
 
   if (model.topUseCases.length > 0) {
@@ -195,11 +206,15 @@ export function serializeReportToMarkdown(model: ReportExportViewModel) {
       lines.push("");
     }
   } else {
-    lines.push("No prioritized use cases were persisted for this run.");
+    lines.push(
+      model.publishMode === "grounded_fallback"
+        ? "No grounded opportunity hypotheses met the minimum evidence bar for this run."
+        : "No prioritized use cases were persisted for this run.",
+    );
     lines.push("");
   }
 
-  lines.push("### Full candidate set");
+  lines.push(model.publishMode === "grounded_fallback" ? "### Full hypothesis set" : "### Full candidate set");
   lines.push("");
 
   if (model.candidateUseCases.length > 0) {

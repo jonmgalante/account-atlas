@@ -572,6 +572,9 @@ function createRepositoryStub() {
       },
     },
     researchService: {
+      async resolveCompanyEntity() {
+        return "Entity resolution completed.";
+      },
       async enrichExternalSources() {
         return "External enrichment completed.";
       },
@@ -666,6 +669,48 @@ describe("createReportPipelineRunner", () => {
     expect(stub.recentEvents.some((event) => event.eventType === "export_pdf_completed")).toBe(true);
     expect(stub.recentEvents.some((event) => event.eventType === "run_completed")).toBe(true);
     expect(stub.recentEvents.length).toBeGreaterThanOrEqual(16);
+  });
+
+  it("does not advance to fact extraction or account-plan synthesis until entity resolution clears the gate", async () => {
+    const stub = createRepositoryStub();
+    let factBaseAttempts = 0;
+    let accountPlanAttempts = 0;
+    const runner = createReportPipelineRunner({
+      repository: stub.repository,
+      crawler: stub.crawler,
+      researchService: {
+        ...stub.researchService,
+        async resolveCompanyEntity() {
+          throw new PipelineStepError(
+            "ENTITY_RESOLUTION_UNVERIFIED",
+            "Unable to confidently resolve the company behind bk.com after targeted official/public retrieval.",
+          );
+        },
+        async buildFactBase() {
+          factBaseAttempts += 1;
+          return "Fact base completed.";
+        },
+      },
+      accountPlanService: {
+        async generateAccountPlan() {
+          accountPlanAttempts += 1;
+          return "Account plan completed.";
+        },
+      },
+      exportService: stub.exportService,
+    });
+
+    await expect(
+      runner.processReportRun({
+        runId: 11,
+        trigger: "inline",
+      }),
+    ).rejects.toThrow("Unable to confidently resolve the company behind bk.com");
+
+    expect(factBaseAttempts).toBe(0);
+    expect(accountPlanAttempts).toBe(0);
+    expect(stub.run.stepKey).toBe("resolve_company_entity");
+    expect(stub.run.pipelineState.steps.resolve_company_entity.status).toBe("retrying");
   });
 
   it("marks the report successful as soon as the core brief exists, before optional enrichment finishes", async () => {

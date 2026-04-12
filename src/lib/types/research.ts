@@ -29,12 +29,18 @@ export type ResearchConfidenceBySection = {
 };
 
 export type CompanyIdentitySummary = {
+  canonicalDomain?: string;
   companyName: string;
+  relationshipToCanonicalDomain?: string | null;
   archetype: string;
   businessModel: string | null;
+  customerType?: string | null;
+  offerings?: string | null;
+  sector?: string | null;
   industry: string | null;
   publicCompany: boolean | null;
   headquarters: string | null;
+  confidence?: number;
   sourceIds: number[];
 };
 
@@ -59,6 +65,21 @@ export type FactPacketSectionCoverage = {
   rationale: string;
   factIds: number[];
   sourceIds: number[];
+};
+
+export type FactPacketProfileField = {
+  value: string | null;
+  sourceIds: number[];
+  confidence: number;
+};
+
+export type FactPacketCompanyProfile = {
+  companyDescription: FactPacketProfileField;
+  industry: FactPacketProfileField;
+  productsServices: FactPacketProfileField;
+  operatingModel: FactPacketProfileField;
+  targetCustomers: FactPacketProfileField;
+  keyPublicSignals: ResearchLinkedItem[];
 };
 
 export type ResearchSummary = {
@@ -91,6 +112,7 @@ export type FactPacket = {
   packetVersion: 1;
   briefMode: "standard" | "light";
   companyIdentity: CompanyIdentitySummary;
+  companyProfile: FactPacketCompanyProfile;
   sourceRegistry: SourceRegistryEntry[];
   evidence: FactPacketEvidence[];
   sectionCoverage: FactPacketSectionCoverage[];

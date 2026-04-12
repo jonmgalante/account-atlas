@@ -23,6 +23,7 @@ export type PipelineExecutionMode = "inline" | "vercel_queue";
 export type PipelineStepKey =
   | "normalize_target"
   | "crawl_company_site"
+  | "resolve_company_entity"
   | "enrich_external_sources"
   | "build_fact_base"
   | "generate_account_plan"

@@ -423,7 +423,7 @@ describe("createReportService", () => {
     expect(result.report.normalizedInputUrl).toBe("https://www.openai.com/");
     expect(result.report.canonicalDomain).toBe("openai.com");
     expect(result.currentRun.executionMode).toBe("inline");
-    expect(result.currentRun.progress.steps).toHaveLength(8);
+    expect(result.currentRun.progress.steps).toHaveLength(9);
   });
 
   it("retries when a generated share ID is already taken", async () => {
@@ -746,6 +746,36 @@ describe("createReportService", () => {
     expect(status?.message).toContain("core brief is ready");
   });
 
+  it("uses focused coverage copy when limited optional coverage follows a high evidence score", async () => {
+    const { repository, storedReports } = createRepositoryStub();
+    const service = createReportService({ repository });
+    const created = await service.createReport("example.com");
+    const stored = storedReports.get(created.shareId);
+
+    if (!stored?.currentRun) {
+      throw new Error("Expected stored run");
+    }
+
+    stored.report.status = "ready_with_limited_coverage";
+    stored.report.completedAt = new Date("2026-04-07T12:02:00.000Z");
+    stored.currentRun.status = "completed";
+    stored.currentRun.completedAt = new Date("2026-04-07T12:02:00.000Z");
+    stored.currentRun.researchSummary = {
+      ...createMinimalResearchSummary(),
+      researchCompletenessScore: 84,
+      overallConfidence: "high",
+    };
+    stored.currentRun.accountPlan = createMinimalAccountPlan();
+    stored.currentRun.accountPlan.topUseCases = stored.currentRun.accountPlan.candidateUseCases.slice(0, 3);
+
+    const status = await service.getReportStatusShell(created.shareId);
+
+    expect(status?.report.status).toBe("ready_with_limited_coverage");
+    expect(status?.result.label).toBe("Focused coverage");
+    expect(status?.result.summary).toContain("focused source coverage");
+    expect(status?.message).toContain("focused source coverage");
+  });
+
   it("does not treat an empty completed shell as a successful report", async () => {
     const { repository, storedReports } = createRepositoryStub();
     const service = createReportService({ repository });
@@ -975,5 +1005,127 @@ describe("createReportService", () => {
     }
 
     expect(artifact.body).toBe("# Example");
+  });
+
+  it("materializes a missing Markdown artifact when loading a terminal report document", async () => {
+    const { repository, storedReports, storedArtifacts } = createRepositoryStub();
+    let markdownGenerations = 0;
+    const service = createReportService({
+      repository,
+      exportService: {
+        async generateMarkdownArtifact(context) {
+          markdownGenerations += 1;
+          const nextArtifacts = storedArtifacts.get(context.run.id) ?? [];
+          nextArtifacts.push({
+            id: nextArtifacts.length + 1,
+            reportId: context.report.id,
+            runId: context.run.id,
+            artifactType: "markdown",
+            mimeType: "text/markdown; charset=utf-8",
+            fileName: "example-account-atlas-atlas12345.md",
+            storagePointers: {
+              storageMode: "inline_text",
+              inlineText: "# Example",
+            },
+            contentHash: "hash123",
+            sizeBytes: 9,
+            createdAt: new Date("2026-04-07T12:00:00.000Z"),
+            updatedAt: new Date("2026-04-07T12:00:00.000Z"),
+          });
+          storedArtifacts.set(context.run.id, nextArtifacts);
+
+          return "Generated Markdown.";
+        },
+        async generatePdfArtifact() {
+          throw new Error("Not needed in this test");
+        },
+      } as const,
+    });
+    const created = await service.createReport("example.com");
+    const stored = storedReports.get(created.shareId);
+
+    if (!stored?.currentRun) {
+      throw new Error("Expected stored run");
+    }
+
+    stored.report.status = "ready";
+    stored.report.completedAt = new Date("2026-04-07T12:02:00.000Z");
+    stored.currentRun.status = "completed";
+    stored.currentRun.completedAt = new Date("2026-04-07T12:02:00.000Z");
+    stored.currentRun.researchSummary = createMinimalResearchSummary();
+    stored.currentRun.accountPlan = createMinimalAccountPlan();
+    stored.currentRun.accountPlan.topUseCases = stored.currentRun.accountPlan.candidateUseCases.slice(0, 3);
+    storedArtifacts.set(stored.currentRun.id, []);
+
+    const document = await service.getReportDocument(created.shareId);
+
+    expect(markdownGenerations).toBe(1);
+    expect(document?.artifacts.some((artifact) => artifact.artifactType === "markdown")).toBe(true);
+    expect(document?.artifacts.find((artifact) => artifact.artifactType === "markdown")?.downloadPath).toBe(
+      `/api/reports/${created.shareId}/artifacts/markdown`,
+    );
+  });
+
+  it("generates a missing PDF artifact on demand for a terminal report", async () => {
+    const { repository, storedReports, storedArtifacts } = createRepositoryStub();
+    let pdfGenerations = 0;
+    const service = createReportService({
+      repository,
+      exportService: {
+        async generateMarkdownArtifact() {
+          throw new Error("Not needed in this test");
+        },
+        async generatePdfArtifact(context) {
+          pdfGenerations += 1;
+          const nextArtifacts = storedArtifacts.get(context.run.id) ?? [];
+          nextArtifacts.push({
+            id: nextArtifacts.length + 1,
+            reportId: context.report.id,
+            runId: context.run.id,
+            artifactType: "pdf",
+            mimeType: "application/pdf",
+            fileName: "example-account-atlas-atlas12345.pdf",
+            storagePointers: {
+              storageMode: "inline_base64",
+              inlineBase64: Buffer.from("pdf-bytes").toString("base64"),
+            },
+            contentHash: "hash456",
+            sizeBytes: 9,
+            createdAt: new Date("2026-04-07T12:00:00.000Z"),
+            updatedAt: new Date("2026-04-07T12:00:00.000Z"),
+          });
+          storedArtifacts.set(context.run.id, nextArtifacts);
+
+          return "Generated PDF.";
+        },
+      } as const,
+    });
+    const created = await service.createReport("example.com");
+    const stored = storedReports.get(created.shareId);
+
+    if (!stored?.currentRun) {
+      throw new Error("Expected stored run");
+    }
+
+    stored.report.status = "ready";
+    stored.report.completedAt = new Date("2026-04-07T12:02:00.000Z");
+    stored.currentRun.status = "completed";
+    stored.currentRun.completedAt = new Date("2026-04-07T12:02:00.000Z");
+    stored.currentRun.researchSummary = createMinimalResearchSummary();
+    stored.currentRun.accountPlan = createMinimalAccountPlan();
+    stored.currentRun.accountPlan.topUseCases = stored.currentRun.accountPlan.candidateUseCases.slice(0, 3);
+    storedArtifacts.set(stored.currentRun.id, []);
+
+    const artifact = await service.getArtifactDownload(created.shareId, "pdf");
+
+    expect(pdfGenerations).toBe(1);
+    expect(artifact).not.toBeNull();
+    expect(artifact?.kind).toBe("inline");
+
+    if (artifact?.kind !== "inline") {
+      throw new Error("Expected inline artifact");
+    }
+
+    expect(Buffer.from(artifact.body as Buffer).toString()).toBe("pdf-bytes");
   });
 });

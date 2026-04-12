@@ -43,7 +43,11 @@ function formatRunStatusLabel(status: string) {
 
 function getPrimaryStatusLabel(status: ReportStatusShell) {
   if (status.report.status === "ready_with_limited_coverage") {
-    return "Ready with limited coverage";
+    const researchCompletenessScore = status.currentRun?.researchSummary?.researchCompletenessScore ?? null;
+
+    return researchCompletenessScore !== null && researchCompletenessScore >= 75
+      ? "Ready with focused coverage"
+      : "Ready with limited coverage";
   }
 
   if (status.report.status === "ready") {
@@ -76,7 +80,7 @@ function getRunNarrative(status: ReportStatusShell) {
     : null;
 
   if (status.report.status === "ready_with_limited_coverage" && currentRun.status !== "completed") {
-    return "The core brief is already usable. Optional enrichment or export work may still finish in the background, so some coverage details can improve on refresh.";
+    return "The core brief is already usable. Optional enrichment or export work may still finish in the background, and some optional coverage details may fill in on refresh.";
   }
 
   if (status.report.status === "ready" && currentRun.status !== "completed") {
@@ -98,7 +102,11 @@ function getRunNarrative(status: ReportStatusShell) {
         : "The brief is actively collecting and synthesizing public-web evidence.";
     case "completed":
       if (status.report.status === "ready_with_limited_coverage") {
-        return "The latest run finished with limited coverage. Review the build log, warnings, and any missing exports before treating this as a full account brief.";
+        const researchCompletenessScore = currentRun.researchSummary?.researchCompletenessScore ?? null;
+
+        return researchCompletenessScore !== null && researchCompletenessScore >= 75
+          ? "The latest run finished with focused source coverage. The core brief is usable, with lighter coverage in some optional areas or exports."
+          : "The latest run finished with a usable brief, with lighter coverage in some optional areas or exports.";
       }
 
       return "The latest run finished successfully. The AI account brief reflects the persisted public-web evidence gathered for this report.";
@@ -246,40 +254,57 @@ export function ReportStatusPanel({ status, isPolling, errorMessage }: ReportSta
           </div>
         </div>
 
-        {currentRun.accountPlan ? (
-          <div className="space-y-3">
-            <div className="flex items-center justify-between gap-3">
-              <h3 className="text-lg font-semibold text-foreground">AI account brief snapshot</h3>
-              <Badge className="rounded-full px-3 py-1 uppercase" variant="outline">
-                {currentRun.accountPlan.overallAccountMotion.recommendedMotion.replaceAll("_", " ")}
-              </Badge>
-            </div>
-            <div className="rounded-[1.5rem] border border-border/70 bg-background/72 px-4 py-4 text-sm text-muted-foreground">
-              {currentRun.accountPlan.overallAccountMotion.rationale}
-            </div>
-            <div className="grid gap-3">
-              {currentRun.accountPlan.topUseCases.map((useCase) => (
-                <div
-                  key={`${useCase.priorityRank}-${useCase.workflowName}`}
-                  className="rounded-[1.5rem] border border-border/70 bg-background/72 px-4 py-4"
-                >
-                  <div className="flex items-start justify-between gap-3">
-                    <div>
-                      <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">
-                        Top {useCase.priorityRank} • {formatDepartmentLabel(useCase.department)}
-                      </div>
-                      <div className="mt-1 font-medium text-foreground">{useCase.workflowName}</div>
-                    </div>
-                    <Badge className="rounded-full px-3 py-1" variant="secondary">
-                      {useCase.scorecard.priorityScore}
+        {currentRun.accountPlan
+          ? (() => {
+              const accountPlan = currentRun.accountPlan;
+
+              return (
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <h3 className="text-lg font-semibold text-foreground">AI account brief snapshot</h3>
+                    <Badge className="rounded-full px-3 py-1 uppercase" variant="outline">
+                      {accountPlan.publishMode === "grounded_fallback"
+                        ? "grounded brief"
+                        : accountPlan.overallAccountMotion.recommendedMotion.replaceAll("_", " ")}
                     </Badge>
                   </div>
-                  <p className="mt-2 text-sm leading-7 text-muted-foreground">{useCase.summary}</p>
+                  <div className="rounded-[1.5rem] border border-border/70 bg-background/72 px-4 py-4 text-sm text-muted-foreground">
+                    {accountPlan.publishMode === "grounded_fallback"
+                      ? accountPlan.groundedFallbackBrief?.summary
+                      : accountPlan.overallAccountMotion.rationale}
+                  </div>
+                  <div className="grid gap-3">
+                    {(accountPlan.publishMode === "grounded_fallback"
+                      ? accountPlan.candidateUseCases
+                      : accountPlan.topUseCases
+                    ).map((useCase) => (
+                      <div
+                        key={`${useCase.priorityRank}-${useCase.workflowName}`}
+                        className="rounded-[1.5rem] border border-border/70 bg-background/72 px-4 py-4"
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">
+                              {accountPlan.publishMode === "grounded_fallback"
+                                ? `Hypothesis • ${formatDepartmentLabel(useCase.department)}`
+                                : `Top ${useCase.priorityRank} • ${formatDepartmentLabel(useCase.department)}`}
+                            </div>
+                            <div className="mt-1 font-medium text-foreground">{useCase.workflowName}</div>
+                          </div>
+                          <Badge className="rounded-full px-3 py-1" variant="secondary">
+                            {accountPlan.publishMode === "grounded_fallback"
+                              ? `${useCase.scorecard.evidenceConfidence}/100`
+                              : useCase.scorecard.priorityScore}
+                          </Badge>
+                        </div>
+                        <p className="mt-2 text-sm leading-7 text-muted-foreground">{useCase.summary}</p>
+                      </div>
+                    ))}
+                  </div>
                 </div>
-              ))}
-            </div>
-          </div>
-        ) : null}
+              );
+            })()
+          : null}
 
         {errorMessage ? (
           <div className="rounded-[1.25rem] border border-destructive/20 bg-destructive/5 px-4 py-3 text-sm text-destructive">

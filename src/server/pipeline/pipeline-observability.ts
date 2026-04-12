@@ -1,7 +1,7 @@
 import "server-only";
 
 import type { PipelineStepKey, ReportEventLevel } from "@/lib/types/report";
-import { evaluateSellerFacingReport } from "@/lib/report-completion";
+import { evaluatePublishableReport } from "@/lib/report-completion";
 import { logServerEvent } from "@/server/observability/logger";
 import { normalizePipelineState } from "@/server/pipeline/pipeline-steps";
 import type { PersistedArtifact, ReportRepository, StoredRunContext } from "@/server/repositories/report-repository";
@@ -48,7 +48,7 @@ export function summarizeRunCoverage(
   const availableArtifactTypes = [...new Set(artifacts.map((artifact) => artifact.artifactType))];
   const coverageLimitations: string[] = [];
   const pipelineState = normalizePipelineState(context.run.pipelineState);
-  const contract = evaluateSellerFacingReport({
+  const contract = evaluatePublishableReport({
     researchSummary: context.run.researchSummary,
     accountPlan: context.run.accountPlan,
   });
@@ -58,6 +58,10 @@ export function summarizeRunCoverage(
 
   if (!contract.isSatisfied) {
     coverageLimitations.push(...contract.missingRequirements.map((requirement) => `missing_core:${requirement}`));
+  }
+
+  if (contract.publishMode === "grounded_fallback") {
+    coverageLimitations.push("fallback_publish_mode:grounded_fallback");
   }
 
   if (!availableArtifactTypes.includes("markdown")) {

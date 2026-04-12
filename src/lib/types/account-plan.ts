@@ -105,7 +105,17 @@ export type AccountMotionRecommendation = {
   evidenceSourceIds: number[];
 };
 
+export type AccountPlanPublishMode = "full" | "grounded_fallback";
+
+export type GroundedFallbackBrief = {
+  summary: string;
+  sourceIds: number[];
+  opportunityHypothesisNote: string | null;
+};
+
 export type FinalAccountPlan = {
+  publishMode?: AccountPlanPublishMode;
+  groundedFallbackBrief?: GroundedFallbackBrief | null;
   overallAccountMotion: AccountMotionRecommendation;
   candidateUseCases: AccountPlanUseCase[];
   topUseCases: AccountPlanUseCase[];

@@ -57,6 +57,11 @@ function summarizeSourceCoverage(sources: PersistedSource[], canonicalDomain: st
   };
 }
 
+function normalizeOptionalString(value: string | null | undefined) {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : null;
+}
+
 export function deriveCompanyNameFromDomain(canonicalDomain: string) {
   const rootLabel = canonicalDomain.split(".")[0] ?? canonicalDomain;
 
@@ -71,6 +76,185 @@ export function deriveCompanyNameFromDomain(canonicalDomain: string) {
       return segment.charAt(0).toUpperCase() + segment.slice(1);
     })
     .join(" ");
+}
+
+const COMPANY_NAME_PAGE_LABELS = new Set([
+  "about",
+  "about us",
+  "blog",
+  "careers",
+  "company",
+  "contact",
+  "developers",
+  "docs",
+  "documentation",
+  "home",
+  "investor relations",
+  "investors",
+  "news",
+  "newsroom",
+  "official site",
+  "platform",
+  "press",
+  "privacy",
+  "products",
+  "security",
+  "solutions",
+  "status",
+  "support",
+]);
+
+const COMPANY_NAME_SOURCE_PRIORITY: Partial<Record<PersistedSource["sourceType"], number>> = {
+  company_homepage: 50,
+  about_page: 46,
+  investor_relations_page: 42,
+  earnings_release: 40,
+  investor_report: 40,
+  newsroom_page: 38,
+  company_site: 36,
+  product_page: 28,
+  solutions_page: 28,
+  careers_page: 24,
+  blog_page: 22,
+  news_article: 18,
+};
+
+function isFirstPartySourceForDomain(source: PersistedSource, canonicalDomain: string) {
+  return source.canonicalDomain === canonicalDomain || source.canonicalDomain.endsWith(`.${canonicalDomain}`);
+}
+
+function normalizeCompanyNameCandidate(value: string) {
+  return value
+    .replace(/\s+/g, " ")
+    .replace(/^[|:,\-–—\s]+|[|:,\-–—\s]+$/g, "")
+    .trim();
+}
+
+function normalizeCompanyNameKey(value: string) {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+function normalizeCompanyNameAlpha(value: string) {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, "");
+}
+
+function isAcronymLikeCompanyName(value: string) {
+  const compact = value.replace(/[^A-Za-z0-9]+/g, "");
+
+  return compact.length > 0 && compact.length <= 4 && compact === compact.toUpperCase();
+}
+
+function isPlausibleCompanyNameCandidate(value: string) {
+  const normalized = normalizeCompanyNameCandidate(value);
+
+  if (!normalized || normalized.length < 2 || normalized.length > 80) {
+    return false;
+  }
+
+  if (!/[A-Za-z]/.test(normalized) || normalized.includes("http")) {
+    return false;
+  }
+
+  if (
+    /\b(maintenance|outage|temporarily unavailable|service unavailable|bad gateway|gateway timeout|origin error|cdn error|cloudflare)\b/i.test(
+      normalized,
+    )
+  ) {
+    return false;
+  }
+
+  if (normalized.split(/\s+/).length > 6) {
+    return false;
+  }
+
+  return !COMPANY_NAME_PAGE_LABELS.has(normalizeCompanyNameKey(normalized));
+}
+
+function extractCompanyNameCandidates(title: string) {
+  const cleanedTitle = normalizeCompanyNameCandidate(title);
+  const segments = cleanedTitle
+    .split(/\s*(?:\||:)\s*|\s+(?:-|–|—)\s+/)
+    .map((segment) => normalizeCompanyNameCandidate(segment))
+    .filter(Boolean);
+
+  const candidates = segments.length > 1 ? segments : [cleanedTitle, ...segments];
+
+  return [...new Set(candidates.filter(isPlausibleCompanyNameCandidate))];
+}
+
+function scoreCompanyNameCandidate(candidate: string, source: PersistedSource, canonicalDomain: string) {
+  const wordCount = candidate.split(/\s+/).length;
+
+  return (
+    (COMPANY_NAME_SOURCE_PRIORITY[source.sourceType] ?? 12) +
+    (source.canonicalDomain === canonicalDomain ? 8 : 4) +
+    Math.min(12, candidate.length) +
+    (wordCount > 1 ? 12 : 0) +
+    (!isAcronymLikeCompanyName(candidate) ? 8 : 0) -
+    (wordCount > 4 ? 6 : 0)
+  );
+}
+
+function shouldPreferSupportedCompanyName(currentName: string, candidate: string, canonicalDomain: string) {
+  const normalizedCurrent = normalizeCompanyNameCandidate(currentName);
+  const normalizedCandidate = normalizeCompanyNameCandidate(candidate);
+
+  if (!normalizedCandidate) {
+    return false;
+  }
+
+  if (!normalizedCurrent) {
+    return true;
+  }
+
+  if (normalizedCurrent === normalizedCandidate) {
+    return false;
+  }
+
+  if (normalizeCompanyNameAlpha(normalizedCurrent) === normalizeCompanyNameAlpha(normalizedCandidate)) {
+    return true;
+  }
+
+  const derivedFromDomain = deriveCompanyNameFromDomain(canonicalDomain);
+  const currentLooksDomainDerived =
+    normalizeCompanyNameAlpha(normalizedCurrent) === normalizeCompanyNameAlpha(derivedFromDomain);
+
+  if (isAcronymLikeCompanyName(normalizedCurrent) && !isAcronymLikeCompanyName(normalizedCandidate)) {
+    return true;
+  }
+
+  return (
+    currentLooksDomainDerived &&
+    normalizedCandidate.split(/\s+/).length > 1 &&
+    normalizedCandidate.length > normalizedCurrent.length
+  );
+}
+
+export function preferSourceBackedCompanyName(input: {
+  canonicalDomain: string;
+  currentName: string | null;
+  sources: PersistedSource[];
+}) {
+  const fallbackName = normalizeCompanyNameCandidate(
+    input.currentName ?? deriveCompanyNameFromDomain(input.canonicalDomain),
+  );
+  const candidates = input.sources
+    .filter((source) => isFirstPartySourceForDomain(source, input.canonicalDomain) && typeof source.title === "string")
+    .flatMap((source) =>
+      extractCompanyNameCandidates(source.title ?? "").map((candidate) => ({
+        candidate,
+        score: scoreCompanyNameCandidate(candidate, source, input.canonicalDomain),
+      })),
+    )
+    .sort((left, right) => right.score - left.score || right.candidate.length - left.candidate.length);
+
+  const bestCandidate = candidates[0]?.candidate ?? null;
+
+  if (bestCandidate && shouldPreferSupportedCompanyName(fallbackName, bestCandidate, input.canonicalDomain)) {
+    return bestCandidate;
+  }
+
+  return fallbackName;
 }
 
 export function selectResearchBriefMode(
@@ -91,6 +275,7 @@ function buildCompanyIdentity(
   sources: PersistedSource[],
   facts: PersistedFact[],
 ): CompanyIdentitySummary {
+  const existingIdentity = context.run.researchSummary?.companyIdentity ?? null;
   const preferredSourceIds = uniqueNumberList(
     sources
       .filter((source) =>
@@ -98,29 +283,54 @@ function buildCompanyIdentity(
       )
       .map((source) => source.id),
   );
-  const fallbackSourceIds = uniqueNumberList([...preferredSourceIds, ...facts.flatMap((fact) => fact.sourceIds)]).slice(0, 3);
+  const fallbackSourceIds = uniqueNumberList([
+    ...(existingIdentity?.sourceIds ?? []),
+    ...preferredSourceIds,
+    ...facts.flatMap((fact) => fact.sourceIds),
+  ]);
   const hasPlatformSignals = sources.some((source) =>
     ["product_page", "solutions_page", "developer_page", "docs_page"].includes(source.sourceType),
   );
   const hasTrustSignals = sources.some((source) =>
     ["security_page", "privacy_page", "status_page"].includes(source.sourceType),
   );
+  const heuristicConfidence =
+    sources.length === 0 ? 20 : sources.length >= 3 ? 78 : sources.length === 2 ? 66 : 52;
+  const preferredCompanyName = preferSourceBackedCompanyName({
+    canonicalDomain: context.report.canonicalDomain,
+    currentName: existingIdentity?.companyName ?? context.report.companyName,
+    sources,
+  });
 
   return {
-    companyName: context.report.companyName ?? deriveCompanyNameFromDomain(context.report.canonicalDomain),
-    archetype: hasPlatformSignals
-      ? "AI and software platform provider"
-      : hasTrustSignals
-        ? "Enterprise software provider"
-        : "Company under research",
-    businessModel: hasPlatformSignals ? "Software platform and enterprise services" : null,
-    industry: null,
+    canonicalDomain: existingIdentity?.canonicalDomain ?? context.report.canonicalDomain,
+    companyName: preferredCompanyName,
+    relationshipToCanonicalDomain: normalizeOptionalString(existingIdentity?.relationshipToCanonicalDomain),
+    archetype:
+      normalizeOptionalString(existingIdentity?.archetype) ??
+      (hasPlatformSignals
+        ? "AI and software platform provider"
+        : hasTrustSignals
+          ? "Enterprise software provider"
+          : "Company under research"),
+    businessModel:
+      normalizeOptionalString(existingIdentity?.businessModel) ??
+      (hasPlatformSignals ? "Software platform and enterprise services" : null),
+    customerType:
+      normalizeOptionalString(existingIdentity?.customerType) ??
+      (hasPlatformSignals ? "Developers and enterprise teams" : null),
+    offerings:
+      normalizeOptionalString(existingIdentity?.offerings) ??
+      (hasPlatformSignals ? "Software platform and enterprise AI capabilities" : null),
+    sector: normalizeOptionalString(existingIdentity?.sector),
+    industry: normalizeOptionalString(existingIdentity?.industry),
     publicCompany: sources.some((source) =>
       ["investor_relations_page", "investor_report", "earnings_release"].includes(source.sourceType),
     )
       ? true
-      : null,
-    headquarters: null,
+      : existingIdentity?.publicCompany ?? null,
+    headquarters: normalizeOptionalString(existingIdentity?.headquarters),
+    confidence: clampConfidence(existingIdentity?.confidence ?? heuristicConfidence),
     sourceIds: fallbackSourceIds.length > 0 ? fallbackSourceIds : sources[0] ? [sources[0].id] : [],
   };
 }
@@ -130,6 +340,135 @@ function factsToLinkedItems(facts: PersistedFact[], limit: number): ResearchLink
     summary: fact.statement,
     sourceIds: uniqueNumberList(fact.sourceIds),
   }));
+}
+
+function sortFactsBySignal(facts: PersistedFact[]) {
+  return [...facts].sort(
+    (left, right) =>
+      right.relevance - left.relevance ||
+      right.confidence - left.confidence ||
+      right.sourceIds.length - left.sourceIds.length,
+  );
+}
+
+function selectTopFact(facts: PersistedFact[]) {
+  return sortFactsBySignal(facts)[0] ?? null;
+}
+
+function buildProfileField(input: {
+  value?: string | null;
+  sourceIds?: number[];
+  confidence?: number;
+  fallbackFact?: PersistedFact | null;
+}) {
+  const normalizedValue = normalizeOptionalString(input.value);
+
+  if (normalizedValue) {
+    return {
+      value: normalizedValue,
+      sourceIds: uniqueNumberList(input.sourceIds ?? []),
+      confidence: clampConfidence(input.confidence ?? 72),
+    };
+  }
+
+  if (input.fallbackFact) {
+    return {
+      value: input.fallbackFact.statement,
+      sourceIds: uniqueNumberList(input.fallbackFact.sourceIds),
+      confidence: clampConfidence(input.fallbackFact.confidence),
+    };
+  }
+
+  return {
+    value: null,
+    sourceIds: [],
+    confidence: 0,
+  };
+}
+
+function buildCompanyDescriptionValue(identity: CompanyIdentitySummary) {
+  const clauses = [
+    identity.industry ?? identity.sector ? `${identity.companyName} operates in ${identity.industry ?? identity.sector}.` : null,
+    identity.offerings ? `It offers ${identity.offerings}.` : null,
+    identity.customerType ? `It primarily serves ${identity.customerType}.` : null,
+    identity.businessModel ? `Its operating model is ${identity.businessModel}.` : null,
+  ].filter((value): value is string => Boolean(value));
+
+  return clauses.join(" ");
+}
+
+function buildCompanyProfile(input: {
+  companyIdentity: CompanyIdentitySummary;
+  relevantFacts: PersistedFact[];
+  companyBriefFacts: PersistedFact[];
+  factsMatchingSourceTypes: (sourceTypes: string[]) => PersistedFact[];
+}): FactPacket["companyProfile"] {
+  const companyDescriptionFact = selectTopFact(
+    input.companyBriefFacts.length > 0 ? input.companyBriefFacts : input.relevantFacts,
+  );
+  const generalCompanyFact = selectTopFact(input.relevantFacts);
+  const productFact = selectTopFact(
+    input.factsMatchingSourceTypes([
+      "company_homepage",
+      "about_page",
+      "product_page",
+      "solutions_page",
+      "developer_page",
+      "docs_page",
+      "customer_page",
+    ]),
+  );
+  const operatingModelFact = selectTopFact(
+    input.factsMatchingSourceTypes([
+      "about_page",
+      "company_homepage",
+      "investor_relations_page",
+      "investor_report",
+      "earnings_release",
+    ]),
+  );
+  const targetCustomerFact = selectTopFact(
+    input.factsMatchingSourceTypes(["customer_page", "solutions_page", "about_page", "company_homepage"]),
+  );
+  const signalFacts = sortFactsBySignal(
+    input.relevantFacts.filter((fact) =>
+      ["company-brief", "fact-base", "ai-maturity-signals"].includes(fact.section),
+    ),
+  ).slice(0, 6);
+
+  return {
+    companyDescription: buildProfileField({
+      value: buildCompanyDescriptionValue(input.companyIdentity),
+      sourceIds: input.companyIdentity.sourceIds,
+      confidence: input.companyIdentity.confidence ?? companyDescriptionFact?.confidence ?? 70,
+      fallbackFact: companyDescriptionFact,
+    }),
+    industry: buildProfileField({
+      value: input.companyIdentity.industry ?? input.companyIdentity.sector ?? null,
+      sourceIds: input.companyIdentity.sourceIds,
+      confidence: input.companyIdentity.confidence ?? 70,
+      fallbackFact: companyDescriptionFact ?? generalCompanyFact,
+    }),
+    productsServices: buildProfileField({
+      value: input.companyIdentity.offerings,
+      sourceIds: input.companyIdentity.sourceIds,
+      confidence: input.companyIdentity.confidence ?? productFact?.confidence ?? 68,
+      fallbackFact: productFact ?? generalCompanyFact,
+    }),
+    operatingModel: buildProfileField({
+      value: input.companyIdentity.businessModel,
+      sourceIds: input.companyIdentity.sourceIds,
+      confidence: input.companyIdentity.confidence ?? operatingModelFact?.confidence ?? 66,
+      fallbackFact: operatingModelFact ?? generalCompanyFact,
+    }),
+    targetCustomers: buildProfileField({
+      value: input.companyIdentity.customerType,
+      sourceIds: input.companyIdentity.sourceIds,
+      confidence: input.companyIdentity.confidence ?? targetCustomerFact?.confidence ?? 64,
+      fallbackFact: targetCustomerFact ?? generalCompanyFact,
+    }),
+    keyPublicSignals: factsToLinkedItems(signalFacts, 6),
+  };
 }
 
 function buildCoverageEntry(input: {
@@ -191,6 +530,12 @@ export function buildFactPacket(input: {
   };
   const relevantFacts = [...input.facts].sort((left, right) => right.relevance - left.relevance);
   const negativeFacts = input.facts.filter((fact) => ["negative", "mixed"].includes(fact.sentiment));
+  const companyProfile = buildCompanyProfile({
+    companyIdentity,
+    relevantFacts,
+    companyBriefFacts: factsMatchingSection("company-brief"),
+    factsMatchingSourceTypes,
+  });
 
   const sectionCoverage: FactPacketSectionCoverage[] = [
     buildCoverageEntry({
@@ -283,6 +628,12 @@ export function buildFactPacket(input: {
   const overallConfidence = toConfidenceBand(researchCompletenessScore);
   const packetSourceIds = uniqueNumberList([
     ...companyIdentity.sourceIds,
+    ...companyProfile.companyDescription.sourceIds,
+    ...companyProfile.industry.sourceIds,
+    ...companyProfile.productsServices.sourceIds,
+    ...companyProfile.operatingModel.sourceIds,
+    ...companyProfile.targetCustomers.sourceIds,
+    ...companyProfile.keyPublicSignals.flatMap((signal) => signal.sourceIds),
     ...input.facts.flatMap((fact) => fact.sourceIds),
   ]);
   const evidenceGaps = sectionCoverage
@@ -347,6 +698,7 @@ export function buildFactPacket(input: {
     packetVersion: 1,
     briefMode,
     companyIdentity,
+    companyProfile,
     sourceRegistry,
     evidence: input.facts.map((fact) => ({
       factId: fact.id,
@@ -367,6 +719,40 @@ export function buildFactPacket(input: {
     overallConfidence,
     sourceIds: summary.sourceIds,
     summary,
+  };
+}
+
+export function buildSynthesisFactPacketPrompt(packet: FactPacket) {
+  return {
+    packetType: packet.packetType,
+    packetVersion: packet.packetVersion,
+    briefMode: packet.briefMode,
+    companyIdentity: packet.companyIdentity,
+    companyProfile: packet.companyProfile,
+    sectionCoverage: packet.sectionCoverage,
+    evidenceGaps: packet.evidenceGaps,
+    researchCompletenessScore: packet.researchCompletenessScore,
+    overallConfidence: packet.overallConfidence,
+    evidence: packet.evidence.map((fact) => ({
+      factId: fact.factId,
+      section: fact.section,
+      classification: fact.classification,
+      claim: fact.claim,
+      rationale: fact.rationale,
+      confidence: fact.confidence,
+      freshness: fact.freshness,
+      relevance: fact.relevance,
+      sourceIds: fact.sourceIds,
+    })),
+    citationRegistry: packet.sourceRegistry.map((source) => ({
+      sourceId: source.sourceId,
+      title: source.title,
+      url: source.url,
+      sourceType: source.sourceType,
+      sourceTier: source.sourceTier,
+      publishedAt: source.publishedAt,
+      retrievedAt: source.retrievedAt,
+    })),
   };
 }
 

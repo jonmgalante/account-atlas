@@ -1,7 +1,7 @@
 import "server-only";
 
 import { createPendingReportSections } from "@/lib/report-sections";
-import { evaluateSellerFacingReport, getReadyReportSectionKeys } from "@/lib/report-completion";
+import { evaluatePublishableReport, getReadyReportSectionKeys } from "@/lib/report-completion";
 import type { FinalAccountPlan } from "@/lib/types/account-plan";
 import type {
   CreateReportResponse,
@@ -24,6 +24,7 @@ import { createShareId } from "@/lib/id";
 import { extractCanonicalDomain, normalizeCompanyUrl } from "@/lib/url";
 import { isDatabaseConfigError } from "@/server/db/client";
 import { serverEnv } from "@/env/server";
+import { createReportExportService } from "@/server/exports/export-service";
 import { logServerEvent } from "@/server/observability/logger";
 import { createPipelineDispatcher } from "@/server/pipeline/pipeline-dispatcher";
 import { coercePipelineStepKey, normalizePipelineState, serializePipelineProgress } from "@/server/pipeline/pipeline-steps";
@@ -48,6 +49,7 @@ type ReportServiceDependencies = {
   repository?: ReportRepository;
   shareIdGenerator?: () => string;
   dispatcher?: ReturnType<typeof createPipelineDispatcher>;
+  exportService?: ReturnType<typeof createReportExportService>;
 };
 
 type CreateReportOptions = {
@@ -269,7 +271,7 @@ function hasUsableCoreBrief(shell: StoredReportShell | null) {
     return false;
   }
 
-  return evaluateSellerFacingReport({
+  return evaluatePublishableReport({
     researchSummary: shell.currentRun.researchSummary,
     accountPlan: shell.currentRun.accountPlan,
   }).isSatisfied;
@@ -284,9 +286,21 @@ function buildShellMessage(shell: StoredReportShell) {
     return "The report exists, but no run record is attached yet.";
   }
 
+  const contract = evaluatePublishableReport({
+    researchSummary: shell.currentRun.researchSummary,
+    accountPlan: shell.currentRun.accountPlan,
+  });
+
   if (isReadyLikeReportStatus(shell.report.status) && shell.currentRun.status !== "completed") {
+    if (contract.publishMode === "grounded_fallback") {
+      return "A grounded company brief is ready. Account Atlas may still finish optional enrichment or exports in the background.";
+    }
+
     return shell.report.status === "ready_with_limited_coverage"
-      ? "A usable core brief is ready. Account Atlas may still finish optional enrichment or exports in the background."
+      ? buildLimitedCoverageShellMessage({
+          researchCompletenessScore: shell.currentRun.researchSummary?.researchCompletenessScore ?? null,
+          runCompleted: false,
+        })
       : "A usable core brief is ready. Optional enrichment or export work may still complete in the background.";
   }
 
@@ -295,6 +309,17 @@ function buildShellMessage(shell: StoredReportShell) {
   }
 
   if (shell.currentRun.status === "completed") {
+    if (contract.publishMode === "grounded_fallback") {
+      return "This report run completed with a grounded company brief. Company-specific opportunity recommendations remained low-confidence, so Account Atlas published the shorter citation-backed fallback brief.";
+    }
+
+    if (shell.report.status === "ready_with_limited_coverage") {
+      return buildLimitedCoverageShellMessage({
+        researchCompletenessScore: shell.currentRun.researchSummary?.researchCompletenessScore ?? null,
+        runCompleted: true,
+      });
+    }
+
     return shell.currentRun.statusMessage;
   }
 
@@ -305,15 +330,49 @@ function hasThinEvidence(currentRun: ReportRunSummary | null) {
   return buildThinEvidenceWarnings(currentRun).some((warning) => warning.level === "warning");
 }
 
+function hasHighEvidenceCoverage(researchCompletenessScore: number | null) {
+  return (researchCompletenessScore ?? 0) >= 75;
+}
+
+function buildLimitedCoverageResultLabel(researchCompletenessScore: number | null) {
+  return hasHighEvidenceCoverage(researchCompletenessScore) ? "Focused coverage" : "Limited coverage";
+}
+
+function buildLimitedCoverageResultSummary(researchCompletenessScore: number | null) {
+  if (hasHighEvidenceCoverage(researchCompletenessScore)) {
+    return "The report is ready with focused source coverage. The core brief is usable, with lighter coverage in some optional areas or exports.";
+  }
+
+  return "The report is ready with a usable seller-facing brief, with lighter coverage in some optional areas or exports.";
+}
+
+function buildLimitedCoverageShellMessage(input: {
+  researchCompletenessScore: number | null;
+  runCompleted: boolean;
+}) {
+  const { researchCompletenessScore, runCompleted } = input;
+
+  if (runCompleted) {
+    return hasHighEvidenceCoverage(researchCompletenessScore)
+      ? "This report run completed with focused source coverage. The core brief is usable, with lighter coverage in some optional areas or exports."
+      : "This report run completed with a usable seller-facing brief, with lighter coverage in some optional areas or exports.";
+  }
+
+  return hasHighEvidenceCoverage(researchCompletenessScore)
+    ? "A usable core brief is ready with focused source coverage. Account Atlas may still finish optional enrichment or exports in the background."
+    : "A usable core brief is ready. Account Atlas may still finish optional enrichment or exports in the background, and some optional areas may fill in on refresh.";
+}
+
 function buildResultMeta(input: {
   currentRun: ReportRunSummary | null;
   reportStatus: ReportSummary["status"];
 }) {
   const { currentRun, reportStatus } = input;
-  const contract = evaluateSellerFacingReport({
+  const contract = evaluatePublishableReport({
     researchSummary: currentRun?.researchSummary,
     accountPlan: currentRun?.accountPlan,
   });
+  const researchCompletenessScore = currentRun?.researchSummary?.researchCompletenessScore ?? null;
   const partialDataAvailable = Boolean(currentRun?.researchSummary || currentRun?.accountPlan);
   let state: ReportContentState = "pending";
   let label = "In progress";
@@ -321,9 +380,14 @@ function buildResultMeta(input: {
 
   if (reportStatus === "ready_with_limited_coverage" && contract.isSatisfied) {
     state = "ready";
-    label = "Limited coverage";
+    label =
+      contract.publishMode === "grounded_fallback"
+        ? "Grounded brief"
+        : buildLimitedCoverageResultLabel(researchCompletenessScore);
     summary =
-      "The run completed with a usable seller-facing brief, but at least one optional section, export, or fallback path remained limited. Review the build log and warnings before acting.";
+      contract.publishMode === "grounded_fallback"
+        ? "The report is ready with a grounded company snapshot. Company-specific opportunity fit stayed low-confidence, so Account Atlas published a shorter citation-backed brief instead of a full prioritized plan."
+        : buildLimitedCoverageResultSummary(researchCompletenessScore);
   } else if (currentRun?.status === "failed" && partialDataAvailable) {
     state = "partial";
     label = "Partial report";
@@ -360,21 +424,37 @@ function buildReportTitle(report: ReportSummary) {
 }
 
 function buildReportSummary(shell: ReportShell) {
-  const contract = evaluateSellerFacingReport({
+  const contract = evaluatePublishableReport({
     researchSummary: shell.currentRun?.researchSummary,
     accountPlan: shell.currentRun?.accountPlan,
   });
 
   if (isReadyLikeReportStatus(shell.report.status) && shell.currentRun?.status !== "completed") {
     return shell.report.status === "ready_with_limited_coverage"
-      ? "This report already includes a usable seller-facing brief. Optional enrichment or export work may still finish in the background, so coverage can improve on refresh."
+      ? buildLimitedCoverageShellMessage({
+          researchCompletenessScore: shell.currentRun?.researchSummary?.researchCompletenessScore ?? null,
+          runCompleted: false,
+        })
       : "This report already includes a usable seller-facing brief. Optional enrichment or exports may still finish in the background.";
   }
 
   if (shell.currentRun?.status === "completed" && shell.report.status === "ready_with_limited_coverage") {
-    return contract.isSatisfied
-      ? "This report run completed with a usable seller-facing brief, but some optional sections, fallbacks, or exports remain limited."
+    return contract.publishMode === "grounded_fallback"
+      ? "This report run completed with a grounded company brief. Account Atlas preserved the verified company snapshot and citations, while holding back full prioritized opportunities until company-specific fit could be established."
+      : contract.isSatisfied
+      ? buildLimitedCoverageShellMessage({
+          researchCompletenessScore: shell.currentRun.researchSummary?.researchCompletenessScore ?? null,
+          runCompleted: true,
+        })
       : "This report run completed with limited coverage. Review the available sections, warnings, and build log before using it as a full account brief.";
+  }
+
+  if (
+    shell.currentRun?.status === "completed" &&
+    contract.publishMode === "grounded_fallback" &&
+    shell.currentRun.accountPlan
+  ) {
+    return `This report run completed with a grounded company brief for ${shell.currentRun.researchSummary?.companyIdentity.companyName ?? shell.report.canonicalDomain}. Opportunity recommendations remained low-confidence, so the published brief stays focused on company identity, public evidence, and any cautiously grounded hypotheses.`;
   }
 
   if (shell.currentRun?.status === "completed" && contract.isSatisfied && shell.currentRun.accountPlan) {
@@ -702,6 +782,54 @@ export function createReportService(dependencies: ReportServiceDependencies = {}
   const repository = dependencies.repository ?? drizzleReportRepository;
   const shareIdGenerator = dependencies.shareIdGenerator ?? createShareId;
   const dispatcher = dependencies.dispatcher ?? createPipelineDispatcher();
+  const exportService = dependencies.exportService ?? createReportExportService({ repository });
+
+  const materializeArtifactIfMissing = async (input: {
+    shareId: string;
+    artifactType: PersistedArtifact["artifactType"];
+    reason: "document_load" | "download_request";
+    shell?: StoredReportShell | null;
+  }) => {
+    let artifact = await repository.findArtifactByShareId(input.shareId, input.artifactType);
+
+    if (artifact) {
+      return artifact;
+    }
+
+    const shell = input.shell ?? (await repository.findReportShellByShareId(input.shareId));
+
+    if (!shell?.currentRun || !isReadyLikeReportStatus(shell.report.status)) {
+      return null;
+    }
+
+    try {
+      if (input.artifactType === "markdown") {
+        await exportService.generateMarkdownArtifact({
+          report: shell.report,
+          run: shell.currentRun,
+        });
+      } else if (input.artifactType === "pdf") {
+        await exportService.generatePdfArtifact({
+          report: shell.report,
+          run: shell.currentRun,
+        });
+      } else {
+        return null;
+      }
+    } catch (error) {
+      logServerEvent("warn", "report.artifact.materialize_failed", {
+        shareId: input.shareId,
+        artifactType: input.artifactType,
+        reason: input.reason,
+        error,
+      });
+      return null;
+    }
+
+    artifact = await repository.findArtifactByShareId(input.shareId, input.artifactType);
+
+    return artifact;
+  };
 
   return {
     async createReport(
@@ -1037,6 +1165,16 @@ export function createReportService(dependencies: ReportServiceDependencies = {}
 
       const currentRun = serializeRun(shell.currentRun);
       const sections = buildReportSections(currentRun);
+
+      if (shell.currentRun && isReadyLikeReportStatus(shell.report.status)) {
+        await materializeArtifactIfMissing({
+          shareId,
+          artifactType: "markdown",
+          reason: "document_load",
+          shell,
+        });
+      }
+
       const [sources, facts, artifacts] = shell.currentRun
         ? await Promise.all([
             repository.listSourcesByRunId(shell.currentRun.id),
@@ -1159,7 +1297,11 @@ export function createReportService(dependencies: ReportServiceDependencies = {}
       shareId: string,
       artifactType: PersistedArtifact["artifactType"],
     ): Promise<ArtifactDownloadPayload | null> {
-      const artifact = await repository.findArtifactByShareId(shareId, artifactType);
+      const artifact = await materializeArtifactIfMissing({
+        shareId,
+        artifactType,
+        reason: "download_request",
+      });
 
       if (!artifact) {
         return null;

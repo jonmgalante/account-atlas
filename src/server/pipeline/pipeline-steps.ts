@@ -43,27 +43,33 @@ export const REPORT_PIPELINE_STEPS: ReadonlyArray<{
     runStatus: "fetching",
   },
   {
+    key: "resolve_company_entity",
+    label: "Resolve company entity",
+    progressPercent: 30,
+    runStatus: "extracting",
+  },
+  {
     key: "build_fact_base",
     label: "Build fact base",
-    progressPercent: 34,
+    progressPercent: 42,
     runStatus: "extracting",
   },
   {
     key: "generate_account_plan",
     label: "Generate account plan",
-    progressPercent: 58,
+    progressPercent: 62,
     runStatus: "synthesizing",
   },
   {
     key: "export_markdown",
     label: "Export markdown",
-    progressPercent: 72,
+    progressPercent: 74,
     runStatus: "synthesizing",
   },
   {
     key: "export_pdf",
     label: "Export PDF",
-    progressPercent: 84,
+    progressPercent: 86,
     runStatus: "synthesizing",
   },
   {

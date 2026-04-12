@@ -321,17 +321,27 @@ function AccountAtlasPdfDocument({ model }: { model: ReportExportViewModel }) {
         </View>
 
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Recommended motion</Text>
-          <Text style={styles.paragraph}>
-            {model.overallMotion.label}: {model.overallMotion.rationale}
-            {renderCitationLabels(model.overallMotion.citationLabels)}
+          <Text style={styles.sectionTitle}>
+            {model.publishMode === "grounded_fallback" ? "Grounded brief" : "Recommended motion"}
           </Text>
+          <Text style={styles.paragraph}>
+            {model.publishMode === "grounded_fallback"
+              ? `${model.groundedFallbackBrief.summary ?? "No grounded fallback summary was persisted."}${renderCitationLabels(model.groundedFallbackBrief.citationLabels)}`
+              : `${model.overallMotion.label}: ${model.overallMotion.rationale}${renderCitationLabels(model.overallMotion.citationLabels)}`}
+          </Text>
+          {model.publishMode === "grounded_fallback" && model.groundedFallbackBrief.opportunityHypothesisNote ? (
+            <Text style={styles.paragraph}>{model.groundedFallbackBrief.opportunityHypothesisNote}</Text>
+          ) : null}
         </View>
 
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Top 3 use cases</Text>
+          <Text style={styles.sectionTitle}>
+            {model.publishMode === "grounded_fallback" ? "Grounded opportunity hypotheses" : "Top 3 use cases"}
+          </Text>
           <Text style={styles.sectionSubtitle}>
-            Practical, measurable opportunities ranked by the locked scoring model.
+            {model.publishMode === "grounded_fallback"
+              ? "Lower-confidence hypotheses are shown only when they still meet the minimum grounding bar."
+              : "Practical, measurable opportunities ranked by the locked scoring model."}
           </Text>
 
           {model.topUseCases.length > 0 ? (
@@ -367,7 +377,11 @@ function AccountAtlasPdfDocument({ model }: { model: ReportExportViewModel }) {
             ))
           ) : (
             <View style={styles.card}>
-              <Text style={styles.cardBody}>No prioritized use cases were persisted for this run.</Text>
+              <Text style={styles.cardBody}>
+                {model.publishMode === "grounded_fallback"
+                  ? "No grounded opportunity hypotheses met the minimum evidence bar for this run."
+                  : "No prioritized use cases were persisted for this run."}
+              </Text>
             </View>
           )}
         </View>

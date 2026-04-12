@@ -10,6 +10,49 @@ const shortListItemSchema = z.string().min(1).max(180);
 const mediumListItemSchema = z.string().min(1).max(260);
 const longTextSchema = z.string().min(1).max(600);
 const motionRecommendationSchema = z.enum(["workspace", "api_platform", "hybrid"]);
+const discoveredSourceSchema = z.object({
+  url: z.string().min(1).max(2_048),
+  title: z.string().min(1).max(300),
+  sourceType: z.enum([
+    "company_homepage",
+    "about_page",
+    "product_page",
+    "solutions_page",
+    "security_page",
+    "privacy_page",
+    "careers_page",
+    "newsroom_page",
+    "investor_relations_page",
+    "news_article",
+    "investor_report",
+    "earnings_release",
+    "company_social_profile",
+    "executive_social_profile",
+    "review_platform",
+    "complaint_forum",
+    "support_page",
+    "status_page",
+    "incident_page",
+    "competitor_page",
+    "market_analysis",
+    "company_site",
+    "other",
+  ]),
+  sourceTier: z.enum(["primary", "secondary", "tertiary", "unknown"]),
+  publishedAt: z.string().datetime().nullable(),
+  summary: z.string().min(1).max(700),
+  whyItMatters: z.string().min(1).max(400),
+});
+const qualityGateSectionSchema = z.enum(["executive_summary", "motion_recommendation", "top_opportunities"]);
+const qualityGateIssueCodeSchema = z.enum([
+  "identity_mismatch",
+  "industry_or_business_model_mismatch",
+  "unsupported_citations",
+  "seller_workflow_self_reference",
+  "transient_operational_anomaly",
+  "maintenance_page_overfit",
+  "generic_language",
+]);
 const pilotPlanSchema = z.object({
   objective: z.string().min(1).max(420),
   recommendedMotion: motionRecommendationSchema,
@@ -104,8 +147,39 @@ export const accountPlanNarrativeSchema = z.object({
   }),
 });
 
+export const accountPlanQualityGateSchema = z.object({
+  overallPass: z.boolean(),
+  sections: z.array(
+    z.object({
+      section: qualityGateSectionSchema,
+      status: z.enum(["pass", "fail"]),
+      confidence: confidenceScoreSchema,
+      summary: z.string().min(1).max(320),
+      issueCodes: z.array(qualityGateIssueCodeSchema).max(6),
+      supportingSourceIds: z.array(z.number().int().positive()).max(12),
+      requiresTargetedSources: z.boolean(),
+      targetedSourceFocus: z.array(z.string().min(1).max(160)).max(5),
+    }),
+  ).min(3).max(3),
+  retryPlan: z.object({
+    regenerateCandidateUseCases: z.boolean(),
+    regenerateNarrative: z.boolean(),
+    fetchTargetedSources: z.boolean(),
+    rationale: z.string().min(1).max(420),
+  }),
+});
+
+export const accountPlanTargetedSourceSearchSchema = z.object({
+  discoveredSources: z.array(discoveredSourceSchema).max(8),
+  retrievalSummary: z.string().min(1).max(320),
+});
+
 export type CandidateUseCaseGenerationOutput = z.infer<typeof candidateUseCaseGenerationSchema>;
 export type AccountPlanNarrativeOutput = z.infer<typeof accountPlanNarrativeSchema>;
+export type AccountPlanQualityGateOutput = z.infer<typeof accountPlanQualityGateSchema>;
+export type AccountPlanTargetedSourceSearchOutput = z.infer<typeof accountPlanTargetedSourceSearchSchema>;
 
 export const candidateUseCaseGenerationJsonSchema = z.toJSONSchema(candidateUseCaseGenerationSchema);
 export const accountPlanNarrativeJsonSchema = z.toJSONSchema(accountPlanNarrativeSchema);
+export const accountPlanQualityGateJsonSchema = z.toJSONSchema(accountPlanQualityGateSchema);
+export const accountPlanTargetedSourceSearchJsonSchema = z.toJSONSchema(accountPlanTargetedSourceSearchSchema);
