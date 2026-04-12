@@ -716,6 +716,90 @@ describe("createReportService", () => {
     expect(generation.startCalls).toHaveLength(2);
   });
 
+  it("does not reuse a recent failed report when the deep-research job never started", async () => {
+    const { repository, storedReports } = createRepositoryStub();
+    const generatedIds = ["atlas12345", "atlas67890"];
+    const { service, generation } = createServiceHarness({
+      repository,
+      storedReports,
+      shareIdGenerator: () => {
+        const next = generatedIds.shift();
+
+        if (!next) {
+          throw new Error("Expected another generated ID");
+        }
+
+        return next;
+      },
+    });
+
+    const created = await service.createReport("example.com");
+    const stored = storedReports.get(created.shareId);
+
+    if (!stored?.currentRun) {
+      throw new Error("Expected stored run");
+    }
+
+    const failedAt = new Date();
+    stored.report.status = "failed";
+    stored.report.updatedAt = failedAt;
+    stored.report.failedAt = failedAt;
+    stored.currentRun.status = "failed";
+    stored.currentRun.updatedAt = failedAt;
+    stored.currentRun.failedAt = failedAt;
+    stored.currentRun.errorCode = "DEEP_RESEARCH_START_FAILED";
+    stored.currentRun.errorMessage = "OpenAI rejected the schema before the background job started.";
+    stored.currentRun.statusMessage = "OpenAI rejected the schema before the background job started.";
+    stored.currentRun.openaiResponseId = null;
+    stored.currentRun.openaiResponseStatus = null;
+
+    const retried = await service.createReport("https://www.example.com/about", {
+      requesterHash: "retry-after-start-failure",
+    });
+
+    expect(retried.disposition).toBe("created");
+    expect(retried.reuseReason).toBeNull();
+    expect(retried.shareId).toBe("atlas67890");
+    expect(generation.startCalls).toHaveLength(2);
+  });
+
+  it("still reuses a recent failed report after a real deep-research run started", async () => {
+    const { repository, storedReports } = createRepositoryStub();
+    const { service } = createServiceHarness({
+      repository,
+      storedReports,
+      shareIdGenerator: () => "atlas12345",
+    });
+
+    const created = await service.createReport("example.com");
+    const stored = storedReports.get(created.shareId);
+
+    if (!stored?.currentRun) {
+      throw new Error("Expected stored run");
+    }
+
+    const failedAt = new Date();
+    stored.report.status = "failed";
+    stored.report.updatedAt = failedAt;
+    stored.report.failedAt = failedAt;
+    stored.currentRun.status = "failed";
+    stored.currentRun.updatedAt = failedAt;
+    stored.currentRun.failedAt = failedAt;
+    stored.currentRun.errorCode = "OPENAI_RESPONSE_FAILED";
+    stored.currentRun.errorMessage = "The background response failed.";
+    stored.currentRun.statusMessage = "The background response failed.";
+    stored.currentRun.openaiResponseId = "resp_real_failure";
+    stored.currentRun.openaiResponseStatus = "failed";
+
+    const reused = await service.createReport("https://www.example.com/about", {
+      requesterHash: "recent-failed-reuse",
+    });
+
+    expect(reused.disposition).toBe("reused");
+    expect(reused.reuseReason).toBe("recent_failed");
+    expect(reused.shareId).toBe(created.shareId);
+  });
+
   it("rate limits repeated new report creation attempts for the same requester", async () => {
     const { repository, requestRecords, storedReports } = createRepositoryStub();
     const { service } = createServiceHarness({

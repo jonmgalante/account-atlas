@@ -38,6 +38,9 @@ const confidenceScoreSchema = z.number().int().min(0).max(100);
 const compactStringSchema = z.string().trim().min(1).max(180);
 const mediumStringSchema = z.string().trim().min(1).max(420);
 const longStringSchema = z.string().trim().min(1).max(1_200);
+// OpenAI Structured Outputs rejects JSON Schema `format: "uri"` for response_format,
+// so keep URL fields as plain strings here and validate them after parsing.
+const urlStringSchema = z.string().trim().min(1).max(2_048);
 const nullableCompactStringSchema = compactStringSchema.nullable();
 const nullableMediumStringSchema = mediumStringSchema.nullable();
 const nullableLongStringSchema = longStringSchema.nullable();
@@ -90,7 +93,7 @@ export const canonicalReportSourceSchema = z
   .object({
     source_id: z.number().int().positive(),
     title: mediumStringSchema,
-    url: z.string().trim().url().max(2_048),
+    url: urlStringSchema,
     source_type: z.enum(sourceTypeValues),
     source_tier: z.enum(sourceTierValues),
     publisher: nullableCompactStringSchema,
@@ -206,8 +209,8 @@ export const canonicalAccountAtlasReportSchema = z
         schema_version: z.literal(CANONICAL_ACCOUNT_ATLAS_REPORT_SCHEMA_VERSION),
         report_type: z.literal(CANONICAL_ACCOUNT_ATLAS_REPORT_TYPE),
         generated_at: z.string().datetime(),
-        company_url: z.string().trim().url().max(2_048),
-        normalized_company_url: z.string().trim().url().max(2_048),
+        company_url: urlStringSchema,
+        normalized_company_url: urlStringSchema,
         canonical_domain: compactStringSchema,
         report_mode: z.enum(["full_report", "grounded_fallback"]),
       })

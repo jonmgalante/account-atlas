@@ -430,6 +430,20 @@ function getDomainActivityTimestamp(shell: StoredReportShell | null) {
   return shell?.currentRun?.updatedAt ?? shell?.report.updatedAt ?? null;
 }
 
+function shouldReuseRecentFailedReport(shell: StoredReportShell) {
+  const run = shell.currentRun;
+
+  if (shell.report.status !== "failed" || !run) {
+    return false;
+  }
+
+  if (run.errorCode === "DEEP_RESEARCH_START_FAILED") {
+    return false;
+  }
+
+  return Boolean(run.openaiResponseId || run.canonicalReport || run.researchSummary || run.accountPlan);
+}
+
 function buildShellMessage(shell: StoredReportShell) {
   if (!shell.currentRun) {
     return "The report exists, but no run record is attached yet.";
@@ -1346,7 +1360,8 @@ export function createReportService(dependencies: ReportServiceDependencies = {}
 
         if (
           latestByDomain.report.status === "failed" &&
-          latestByDomain.report.updatedAt >= failedCooldownThreshold
+          latestByDomain.report.updatedAt >= failedCooldownThreshold &&
+          shouldReuseRecentFailedReport(latestByDomain)
         ) {
           await repository.recordReportRequest({
             requesterHash,
