@@ -482,6 +482,7 @@ export function ReportExperience({
   const [reportMode, setReportMode] = useState<ReportMode>("brief");
   const [selectedSourceIds, setSelectedSourceIds] = useState<number[]>([]);
   const [isMobileSourcePanelOpen, setIsMobileSourcePanelOpen] = useState(false);
+  const [hasExpansionInteracted, setHasExpansionInteracted] = useState(false);
   const [isExpansionOpen, setIsExpansionOpen] = useState(false);
 
   useEffect(() => {
@@ -494,6 +495,7 @@ export function ReportExperience({
       }
 
       if (hash === "expansion-scenarios") {
+        setHasExpansionInteracted(true);
         setIsExpansionOpen(true);
       }
     };
@@ -656,6 +658,7 @@ export function ReportExperience({
   const showPilotPlanSection = !isBuildingReport || hasPilotPlanContent;
   const showExpansionSection = !isBuildingReport || hasExpansionContent;
   const showSourcesSection = !isBuildingReport || hasSourcesContent;
+  const isExpansionVisible = hasExpansionContent && (hasExpansionInteracted ? isExpansionOpen : !isBuildingReport);
   const sectionStatusByKey = new Map(document.sections.map((section) => [section.key, section.status]));
   const pendingSectionTargets = compactSectionGroups
     .map((section) => {
@@ -1838,8 +1841,11 @@ export function ReportExperience({
               {hasExpansionContent ? (
                 <details
                   id="expansion-scenarios"
-                  open={isExpansionOpen}
-                  onToggle={(event) => setIsExpansionOpen(event.currentTarget.open)}
+                  open={isExpansionVisible}
+                  onToggle={(event) => {
+                    setHasExpansionInteracted(true);
+                    setIsExpansionOpen(event.currentTarget.open);
+                  }}
                   className="scroll-mt-32 rounded-[1.75rem] border border-border/70 bg-card/80"
                 >
                   <summary className="cursor-pointer list-none px-6 py-6 [&::-webkit-details-marker]:hidden">
