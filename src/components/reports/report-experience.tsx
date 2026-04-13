@@ -262,9 +262,9 @@ function confidenceTone(confidence: number | null) {
 function formatReportStatusLabel(status: string, researchCompletenessScore: number | null = null) {
   switch (status) {
     case "queued":
-      return "Queued";
+      return "In progress";
     case "running":
-      return "Building report";
+      return "In progress";
     case "ready":
       return "Ready";
     case "ready_with_limited_coverage":
@@ -289,9 +289,9 @@ function formatHeroStatusLabel(status: string) {
 function formatDisplayStatusLabel(status: ReportRunSummary["displayStatus"] | ReportStatusShell["displayStatus"]) {
   switch (status) {
     case "queued":
-      return "Queued";
+      return "In progress";
     case "in_progress":
-      return "Building report";
+      return "In progress";
     case "completed":
       return "Ready";
     case "completed_with_grounded_fallback":
@@ -417,8 +417,20 @@ function EmptySection({
       )}
     >
       <CardContent className={cn("text-sm leading-6 text-foreground/70", compact ? "p-4" : "p-5")}>
-        <div className="text-[11px] font-medium uppercase tracking-[0.22em] text-muted-foreground">
-          {compact ? "Section status" : "Waiting on evidence"}
+        <div
+          className={cn(
+            "text-[11px] font-medium uppercase tracking-[0.22em] text-muted-foreground",
+            compact && "inline-flex items-center gap-1.5",
+          )}
+        >
+          {compact ? (
+            <>
+              <LoaderCircle className="h-3.5 w-3.5 animate-spin text-primary" />
+              In progress
+            </>
+          ) : (
+            "Waiting on evidence"
+          )}
         </div>
         <div className="mt-2 font-medium text-foreground">{title}</div>
         <p className="mt-2">{description}</p>
@@ -684,12 +696,30 @@ export function ReportExperience({
     currentRunStatus: liveRun?.displayStatus ?? currentRun?.status ?? null,
   });
   const activeAnchorItems = reportAnchorItemsByMode[reportMode];
+  const activePreparingAnchorIds = new Set<string>();
+  if (showUseCasesSection) {
+    activePreparingAnchorIds.add("use-cases");
+  }
+  if (showStakeholdersSection) {
+    activePreparingAnchorIds.add("stakeholders");
+  }
+  if (showPilotPlanSection) {
+    activePreparingAnchorIds.add("pilot-plan");
+  }
+  if (showExpansionSection) {
+    activePreparingAnchorIds.add("expansion-scenarios");
+  }
+  if (showResearchSection) {
+    activePreparingAnchorIds.add("research");
+  }
+  if (showSourcesSection) {
+    activePreparingAnchorIds.add("sources");
+  }
+  const visibleActiveAnchorItems = isBuildingReport
+    ? activeAnchorItems.filter((item) => activePreparingAnchorIds.has(item.id))
+    : activeAnchorItems;
+  const showJumpToNavigation = !isBuildingReport || visibleActiveAnchorItems.length > 0;
   const hasSelectedSources = selectedSourceIds.length > 0;
-  const buildProgressPercent = liveRun?.progressPercent ?? null;
-  const buildStepLabel =
-    liveRun?.displayStatus === "queued" || liveRun?.displayStatus === "in_progress"
-      ? formatDisplayStatusLabel(liveRun.displayStatus)
-      : null;
   const lastUpdatedAt =
     status?.currentRun?.updatedAt ??
     status?.report.updatedAt ??
@@ -725,6 +755,8 @@ export function ReportExperience({
     : Boolean(isGroundedFallbackBrief && accountPlan?.groundedFallbackBrief?.summary);
   const showSummaryHighlights =
     showMotionSummaryCard || showEvidenceSummaryCard || showTopOpportunitySummaryCard || showGroundedBriefSummaryCard;
+  const activeBuildStatusMessage = "Researching the company and drafting the brief";
+  const activeBuildHelperText = "This page updates automatically. Exports become available when the report is ready.";
   const exportHelperText = isTerminalReport
     ? downloadableMarkdownArtifact && downloadablePdfArtifact
       ? "Markdown and PDF exports are generated from this saved brief."
@@ -733,8 +765,11 @@ export function ReportExperience({
         : !downloadableMarkdownArtifact && downloadablePdfArtifact
           ? "PDF is ready now. Markdown can be prepared on demand from this saved brief."
           : "Exports can be prepared from this saved brief whenever you need them."
-    : null;
+    : isBuildingReport
+      ? activeBuildHelperText
+      : null;
   const heroActionButtonClass = "justify-start md:justify-center";
+  const showHeroExportActions = !isBuildingReport;
 
   useEffect(() => {
     if (!status?.isTerminal) {
@@ -869,7 +904,12 @@ export function ReportExperience({
                   </p>
                 </div>
 
-                <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-start">
+                <div
+                  className={cn(
+                    "grid gap-3",
+                    showHeroExportActions ? "md:grid-cols-[minmax(0,1fr)_auto] md:items-start" : null,
+                  )}
+                >
                   <div className="flex min-w-0 flex-wrap items-start gap-2 rounded-[1.25rem] border border-border/50 bg-background/38 p-3 text-xs text-foreground/65 md:border-0 md:bg-transparent md:p-0 md:text-sm">
                     <div className="inline-flex min-w-0 items-center gap-2 rounded-full border border-border/50 bg-background/62 px-3 py-1.5">
                       <Link2 className="h-4 w-4 shrink-0 text-primary" />
@@ -917,42 +957,44 @@ export function ReportExperience({
                       </div>
                     </details>
                   </div>
-                  <div className="grid gap-2 rounded-[1.25rem] border border-border/50 bg-background/38 p-3 md:flex md:flex-wrap md:justify-end md:border-0 md:bg-transparent md:p-0">
-                    {!markdownButtonState.disabled && markdownButtonState.href ? (
-                      <Button type="button" size="sm" className={heroActionButtonClass} asChild>
-                        <a href={markdownButtonState.href}>
+                  {showHeroExportActions ? (
+                    <div className="grid gap-2 rounded-[1.25rem] border border-border/50 bg-background/38 p-3 md:flex md:flex-wrap md:justify-end md:border-0 md:bg-transparent md:p-0">
+                      {!markdownButtonState.disabled && markdownButtonState.href ? (
+                        <Button type="button" size="sm" className={heroActionButtonClass} asChild>
+                          <a href={markdownButtonState.href}>
+                            <Download className="h-4 w-4" />
+                            {markdownButtonState.label}
+                          </a>
+                        </Button>
+                      ) : (
+                        <Button type="button" size="sm" variant="outline" className={heroActionButtonClass} disabled>
                           <Download className="h-4 w-4" />
                           {markdownButtonState.label}
-                        </a>
-                      </Button>
-                    ) : (
-                      <Button type="button" size="sm" variant="outline" className={heroActionButtonClass} disabled>
-                        <Download className="h-4 w-4" />
-                        {markdownButtonState.label}
-                      </Button>
-                    )}
-                    {!pdfButtonState.disabled && pdfButtonState.href ? (
-                      <Button type="button" size="sm" variant="outline" className={heroActionButtonClass} asChild>
-                        <a href={pdfButtonState.href}>
+                        </Button>
+                      )}
+                      {!pdfButtonState.disabled && pdfButtonState.href ? (
+                        <Button type="button" size="sm" variant="outline" className={heroActionButtonClass} asChild>
+                          <a href={pdfButtonState.href}>
+                            <Download className="h-4 w-4" />
+                            {pdfButtonState.label}
+                          </a>
+                        </Button>
+                      ) : (
+                        <Button type="button" size="sm" variant="outline" className={heroActionButtonClass} disabled>
                           <Download className="h-4 w-4" />
                           {pdfButtonState.label}
-                        </a>
-                      </Button>
-                    ) : (
-                      <Button type="button" size="sm" variant="outline" className={heroActionButtonClass} disabled>
-                        <Download className="h-4 w-4" />
-                        {pdfButtonState.label}
-                      </Button>
-                    )}
-                    {showHardFailureState ? (
-                      <Button type="button" size="sm" variant="outline" className={heroActionButtonClass} asChild>
-                        <Link href={retryHref}>
-                          <RefreshCcw className="h-4 w-4" />
-                          Start a fresh run
-                        </Link>
-                      </Button>
-                    ) : null}
-                  </div>
+                        </Button>
+                      )}
+                      {showHardFailureState ? (
+                        <Button type="button" size="sm" variant="outline" className={heroActionButtonClass} asChild>
+                          <Link href={retryHref}>
+                            <RefreshCcw className="h-4 w-4" />
+                            Start a fresh run
+                          </Link>
+                        </Button>
+                      ) : null}
+                    </div>
+                  ) : null}
                 </div>
 
                 {exportHelperText ? <p className="text-sm leading-6 text-foreground/70 sm:leading-7">{exportHelperText}</p> : null}
@@ -1020,34 +1062,27 @@ export function ReportExperience({
           >
             <div className="flex min-w-0 flex-col gap-2.5">
               {isBuildingReport ? (
-                <div className="rounded-[1.25rem] border border-border/50 bg-background/74 px-4 py-2.5">
-                  <div className="flex flex-wrap items-center justify-between gap-3">
-                    <div className="flex flex-wrap items-center gap-3 text-xs text-foreground/70 sm:text-sm">
+                <div className="rounded-[1.25rem] border border-border/50 bg-background/74 px-4 py-3">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div className="space-y-1.5">
+                      <div className="flex items-center gap-2 text-sm font-medium text-foreground">
+                        <LoaderCircle className="h-4 w-4 animate-spin text-primary" />
+                        {activeBuildStatusMessage}
+                      </div>
+                      <p className="text-xs text-foreground/70">
+                        This page updates automatically.
+                      </p>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2">
                       <Badge className="rounded-full px-3 py-1" variant="secondary">
-                        {primaryStatusLabel}
+                        In progress
                       </Badge>
-                      {buildStepLabel ? (
-                        <span>
-                          Status <span className="font-medium text-foreground">{buildStepLabel}</span>
-                        </span>
-                      ) : null}
-                      <span>
-                        <span className="font-medium text-foreground">{readySectionCount}</span> of {document.sections.length} sections ready
-                      </span>
-                      <span>Updated {formatDateTime(lastUpdatedAt)}</span>
+                      <span className="text-xs text-foreground/70">Updated {formatDateTime(lastUpdatedAt)}</span>
                     </div>
                   </div>
-                  {buildProgressPercent !== null ? (
-                    <div className="mt-2.5 flex items-center gap-3">
-                      <div className="h-1.5 flex-1 rounded-full bg-muted">
-                        <div
-                          className="h-full rounded-full bg-primary transition-[width]"
-                          style={{ width: `${buildProgressPercent}%` }}
-                        />
-                      </div>
-                      <span className="text-xs font-medium text-foreground">{buildProgressPercent}%</span>
-                    </div>
-                  ) : null}
+                  <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-muted">
+                    <div className="h-full w-2/5 rounded-full bg-gradient-to-r from-primary/35 via-primary to-primary/35 animate-pulse" />
+                  </div>
                 </div>
               ) : null}
 
@@ -1095,22 +1130,28 @@ export function ReportExperience({
                     ) : null}
                   </div>
                 </div>
-                <div className="-mx-1 overflow-x-auto px-1 pb-1">
-                  <div className="flex min-w-max items-center gap-2">
-                    <span className="pl-1 text-[11px] font-medium uppercase tracking-[0.22em] text-muted-foreground">
-                      Jump to
-                    </span>
-                    {activeAnchorItems.map((item) => (
-                      <a
-                        key={item.id}
-                        href={`#${item.id}`}
-                        className="shrink-0 whitespace-nowrap rounded-full px-3.5 py-1.5 text-sm text-muted-foreground transition hover:bg-accent hover:text-accent-foreground"
-                      >
-                        {item.label}
-                      </a>
-                    ))}
+                {showJumpToNavigation ? (
+                  <div className="-mx-1 overflow-x-auto px-1 pb-1">
+                    <div className="flex min-w-max items-center gap-2">
+                      <span className="pl-1 text-[11px] font-medium uppercase tracking-[0.22em] text-muted-foreground">
+                        Jump to
+                      </span>
+                      {visibleActiveAnchorItems.map((item) => (
+                        <a
+                          key={item.id}
+                          href={`#${item.id}`}
+                          className="shrink-0 whitespace-nowrap rounded-full px-3.5 py-1.5 text-sm text-muted-foreground transition hover:bg-accent hover:text-accent-foreground"
+                        >
+                          {item.label}
+                        </a>
+                      ))}
+                    </div>
                   </div>
-                </div>
+                ) : isBuildingReport ? (
+                  <div className="px-1 pb-1 text-xs text-foreground/65">
+                    Section links appear here as soon as content is ready.
+                  </div>
+                ) : null}
               </div>
             </div>
           </nav>
@@ -1129,16 +1170,21 @@ export function ReportExperience({
                 title="Executive summary"
                 description="Seller-ready summary of account context, recommended motion, and the main evidence caveats."
               >
-                <div className={cn("grid gap-4", currentRun ? "lg:grid-cols-[1.15fr_0.85fr]" : "lg:grid-cols-1")}>
+                <div
+                  className={cn(
+                    "grid min-w-0 gap-4",
+                    currentRun ? "xl:grid-cols-[minmax(0,1.15fr)_minmax(0,0.85fr)]" : "xl:grid-cols-1",
+                  )}
+                >
                   {(canonicalReport || accountPlan) && !isGroundedFallbackBrief ? (
-                    <Card className="border-strong/70 bg-card/80 shadow-panel">
+                    <Card className="min-w-0 border-strong/70 bg-card/80 shadow-panel">
                       <CardHeader className="space-y-2.5">
                         <CardTitle className="flex items-center gap-2 text-2xl">
                           <Target className="h-5 w-5 text-primary" />
                           Recommended motion
                         </CardTitle>
                       </CardHeader>
-                      <CardContent className={reportCardFlowClass}>
+                      <CardContent className={cn("min-w-0", reportCardFlowClass)}>
                         <div className="flex flex-wrap items-center gap-3">
                           <Badge className="rounded-full px-4 py-1.5 uppercase" variant="secondary">
                             {motionRecommendation}
@@ -1177,14 +1223,14 @@ export function ReportExperience({
                   ) : null}
 
                   {(canonicalReport || accountPlan) && isGroundedFallbackBrief ? (
-                  <Card className="border-strong/70 bg-card/80 shadow-panel">
+                  <Card className="min-w-0 border-strong/70 bg-card/80 shadow-panel">
                     <CardHeader className="space-y-2.5">
                       <CardTitle className="flex items-center gap-2 text-2xl">
                           <Target className="h-5 w-5 text-primary" />
                           Grounded brief
                         </CardTitle>
                       </CardHeader>
-                      <CardContent className={reportCardFlowClass}>
+                      <CardContent className={cn("min-w-0", reportCardFlowClass)}>
                         <div className="flex flex-wrap items-center gap-3">
                           <Badge className="rounded-full px-4 py-1.5 uppercase" variant="secondary">
                             Grounded brief
@@ -1221,12 +1267,12 @@ export function ReportExperience({
                     </Card>
                   ) : null}
 
-                  <Card className="border-strong/70 bg-card/80 shadow-panel">
+                  <Card className="min-w-0 max-w-full border-strong/70 bg-card/80 shadow-panel">
                     <CardHeader className="space-y-2.5">
                       <CardTitle className="text-2xl">Company context</CardTitle>
                     </CardHeader>
-                    <CardContent className={reportCardFlowClass}>
-                      <div>
+                    <CardContent className={cn("min-w-0 break-words", reportCardFlowClass)}>
+                      <div className="min-w-0">
                         <div className="font-medium text-foreground">{companyDisplayName}</div>
                         <div>
                           {canonicalReport?.company.archetype ??
@@ -1321,10 +1367,17 @@ export function ReportExperience({
                                 ? "Buying map"
                                 : section.id === "pilot-plan"
                                   ? "90-day pilot"
-                                  : "Expansion"}
+                              : "Expansion"}
                           </div>
                           <Badge className="rounded-full px-3 py-1" variant="outline">
-                            {section.readyCount > 0 ? `${section.readyCount}/${section.totalCount}` : "Pending"}
+                            {section.readyCount > 0 ? (
+                              `${section.readyCount}/${section.totalCount}`
+                            ) : (
+                              <>
+                                <LoaderCircle className="mr-1 h-3 w-3 animate-spin" />
+                                In progress
+                              </>
+                            )}
                           </Badge>
                         </div>
                         <div className="mt-2 text-xs uppercase tracking-[0.18em] text-muted-foreground">
@@ -2293,9 +2346,7 @@ export function ReportExperience({
                   <div className="space-y-3.5">
                     <div className="flex flex-wrap items-center justify-between gap-3">
                       <div className="text-sm font-medium text-foreground">Sections in progress</div>
-                      <div className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
-                        {pendingSectionTargets.length + (pendingSourceTarget ? 1 : 0)} pending
-                      </div>
+                      <div className="text-xs text-muted-foreground">Refreshing automatically</div>
                     </div>
                     <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
                       {pendingSectionTargets.map((section) => (
@@ -2308,7 +2359,14 @@ export function ReportExperience({
                             <div className="flex items-start justify-between gap-3">
                               <div className="font-medium text-foreground">{section.label}</div>
                               <Badge className="rounded-full px-3 py-1" variant="outline">
-                                {section.readyCount > 0 ? `${section.readyCount}/${section.totalCount}` : "Pending"}
+                                {section.readyCount > 0 ? (
+                                  `${section.readyCount}/${section.totalCount}`
+                                ) : (
+                                  <>
+                                    <LoaderCircle className="mr-1 h-3 w-3 animate-spin" />
+                                    In progress
+                                  </>
+                                )}
                               </Badge>
                             </div>
                             <p className="text-sm leading-6 text-foreground/70">{section.pendingDescription}</p>
@@ -2324,7 +2382,8 @@ export function ReportExperience({
                             <div className="flex items-start justify-between gap-3">
                               <div className="font-medium text-foreground">{pendingSourceTarget.label}</div>
                               <Badge className="rounded-full px-3 py-1" variant="outline">
-                                Pending
+                                <LoaderCircle className="mr-1 h-3 w-3 animate-spin" />
+                                In progress
                               </Badge>
                             </div>
                             <p className="text-sm leading-6 text-foreground/70">{pendingSourceTarget.pendingDescription}</p>

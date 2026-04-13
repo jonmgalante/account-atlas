@@ -17,7 +17,7 @@ type ReportStatusPanelProps = {
 function formatDisplayStatusLabel(status: ReportStatusShell["displayStatus"]) {
   switch (status) {
     case "queued":
-      return "Queued";
+      return "In progress";
     case "in_progress":
       return "In progress";
     case "completed":
@@ -72,9 +72,9 @@ function getRunNarrative(status: ReportStatusShell) {
 
   switch (status.displayStatus ?? currentRun.displayStatus) {
     case "queued":
-      return "The report has been created and is waiting for research to begin.";
+      return "Researching the company and drafting the brief. This page updates automatically.";
     case "in_progress":
-      return "Account Atlas is researching the target company and preparing the saved brief.";
+      return "Researching the company and drafting the brief. This page updates automatically.";
     case "completed_with_grounded_fallback":
       return "The report is ready as a grounded brief. The verified company snapshot and citations stay visible while stronger opportunity claims are held back.";
     case "completed":
@@ -102,6 +102,7 @@ export function ReportStatusPanel({ status, isPolling, errorMessage }: ReportSta
 
   const currentRun = status.currentRun;
   const displayStatus = status.displayStatus ?? currentRun.displayStatus;
+  const isPreparing = displayStatus === "queued" || displayStatus === "in_progress";
   const canonicalReport = currentRun.canonicalReport;
   const evidenceCoverage =
     canonicalReport?.evidence_coverage.research_completeness_score ??
@@ -157,14 +158,20 @@ export function ReportStatusPanel({ status, isPolling, errorMessage }: ReportSta
           <div className="rounded-[1.5rem] border border-border/70 bg-background/72 p-4">
             <div className="text-[11px] font-medium uppercase tracking-[0.22em] text-muted-foreground">Evidence coverage</div>
             <div className="mt-2 font-medium text-foreground">
-              {evidenceCoverage === null ? status.result.label : `${evidenceCoverage}/100`}
+              {evidenceCoverage === null ? (isPreparing ? "In progress" : status.result.label) : `${evidenceCoverage}/100`}
             </div>
           </div>
         </div>
         <div className="rounded-[1.5rem] border border-border/70 bg-background/72 px-4 py-3 text-sm leading-7 text-foreground/70">
-          <div className="font-medium text-foreground">Status summary</div>
-          <p className="mt-2">{normalizeVisibleCopy(status.message)}</p>
-          <p className="mt-2">{normalizeVisibleCopy(status.result.summary)}</p>
+          <div className="font-medium text-foreground">{isPreparing ? "Preparing" : "Status summary"}</div>
+          {isPreparing ? (
+            <p className="mt-2">Sections appear here automatically as research is ready.</p>
+          ) : (
+            <>
+              <p className="mt-2">{normalizeVisibleCopy(status.message)}</p>
+              <p className="mt-2">{normalizeVisibleCopy(status.result.summary)}</p>
+            </>
+          )}
         </div>
       </CardHeader>
 
@@ -173,17 +180,17 @@ export function ReportStatusPanel({ status, isPolling, errorMessage }: ReportSta
           <div className="rounded-[1.5rem] border border-border/70 bg-background/72 p-4">
             <div className="text-[11px] font-medium uppercase tracking-[0.22em] text-muted-foreground">Research job</div>
             <div className="mt-2 font-medium capitalize text-foreground">
-              {currentRun.openaiResponseStatus?.replaceAll("_", " ") ?? "Not started"}
+              {currentRun.openaiResponseStatus?.replaceAll("_", " ") ?? (isPreparing ? "In progress" : "Not started")}
             </div>
           </div>
           <div className="rounded-[1.5rem] border border-border/70 bg-background/72 p-4">
             <div className="text-[11px] font-medium uppercase tracking-[0.22em] text-muted-foreground">Confidence</div>
-            <div className="mt-2 font-medium capitalize text-foreground">{confidenceBand ?? "Pending"}</div>
+            <div className="mt-2 font-medium capitalize text-foreground">{confidenceBand ?? (isPreparing ? "In progress" : "Pending")}</div>
           </div>
           <div className="rounded-[1.5rem] border border-border/70 bg-background/72 p-4">
             <div className="text-[11px] font-medium uppercase tracking-[0.22em] text-muted-foreground">Saved report</div>
             <div className="mt-2 font-medium text-foreground">
-              {canonicalReport ? "Stored and rendering" : "Waiting on saved brief"}
+              {canonicalReport ? "Stored and rendering" : isPreparing ? "In progress" : "Waiting on saved brief"}
             </div>
           </div>
         </div>
