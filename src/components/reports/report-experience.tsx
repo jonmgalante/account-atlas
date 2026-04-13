@@ -144,6 +144,12 @@ const compactSectionGroups: ReadonlyArray<{
   },
 ] as const;
 
+const reportSectionDescriptionClass = "max-w-2xl text-sm leading-6 text-foreground/70 sm:text-base sm:leading-7";
+const reportBodyTextClass =
+  "text-sm text-muted-foreground [&_li]:leading-6 [&_p]:leading-6 sm:[&_li]:leading-7 sm:[&_p]:leading-7";
+const reportCardFlowClass = `space-y-4 ${reportBodyTextClass}`;
+const reportCardFlowCompactClass = `space-y-3.5 ${reportBodyTextClass}`;
+
 function formatMotionLabel(motion: string) {
   return motion === "api_platform" ? "API platform" : motion.replaceAll("_", " ");
 }
@@ -435,13 +441,13 @@ function ReportSection({
   children: React.ReactNode;
 }) {
   return (
-    <section id={id} className="scroll-mt-32 space-y-5 border-t border-border/60 pt-7 sm:pt-8">
+    <section id={id} className="scroll-mt-32 space-y-6 border-t border-border/60 pt-8 sm:pt-9">
       <div className="space-y-3">
         <div className="h-px w-16 bg-gradient-to-r from-primary/40 to-transparent" />
         <p className="text-xs font-medium uppercase tracking-[0.24em] text-muted-foreground">{eyebrow}</p>
-        <div className="space-y-1.5">
+        <div className="space-y-2.5">
           <h2 className="text-3xl leading-tight text-primary sm:text-4xl">{title}</h2>
-          <p className="max-w-2xl text-sm leading-6 text-foreground/70 sm:text-base">{description}</p>
+          <p className={reportSectionDescriptionClass}>{description}</p>
         </div>
       </div>
       {children}
@@ -728,6 +734,7 @@ export function ReportExperience({
           ? "PDF is ready now. Markdown can be prepared on demand from this saved brief."
           : "Exports can be prepared from this saved brief whenever you need them."
     : null;
+  const heroActionButtonClass = "justify-start md:justify-center";
 
   useEffect(() => {
     if (!status?.isTerminal) {
@@ -850,91 +857,95 @@ export function ReportExperience({
           </div>
 
           <Card className="overflow-hidden border-border/60 bg-card/86 shadow-panel">
-            <CardHeader className="space-y-5">
-              <div className="space-y-3.5">
-                <div className="space-y-2.5">
+            <CardHeader className="space-y-4 sm:space-y-5">
+              <div className="space-y-3">
+                <div className="space-y-2">
                   <h1 className="text-balance text-4xl leading-tight text-primary sm:text-5xl">
                     {companyDisplayName}
                   </h1>
                   <p className="text-base font-medium text-foreground/70 sm:text-lg">AI account brief</p>
-                  <p className="max-w-2xl text-base leading-6 text-foreground/70 sm:text-[1.02rem]">{heroSummary}</p>
+                  <p className="max-w-2xl text-base leading-6 text-foreground/70 sm:text-[1.02rem] sm:leading-7">
+                    {heroSummary}
+                  </p>
                 </div>
 
-                <div className="flex flex-wrap items-center gap-2 text-xs text-foreground/65 sm:text-sm">
-                  <div className="inline-flex items-center gap-2 rounded-full border border-border/50 bg-background/62 px-3 py-1.5">
-                    <Link2 className="h-4 w-4 text-primary" />
-                    {document.report.canonicalDomain}
-                  </div>
-                  <div className="inline-flex items-center gap-2 rounded-full border border-border/50 bg-background/62 px-3 py-1.5">
-                    <RefreshCcw className="h-4 w-4 text-primary" />
-                    Updated {formatDateTime(lastUpdatedAt)}
-                  </div>
-                  <details className="rounded-[1.25rem] border border-border/50 bg-background/62 px-3 py-1.5 text-xs text-foreground/70 sm:text-sm">
-                    <summary className="cursor-pointer list-none font-medium text-foreground [&::-webkit-details-marker]:hidden">
-                      Report metadata
-                    </summary>
-                    <div className="mt-3 grid gap-2.5 sm:grid-cols-2">
-                      <div className="rounded-3xl border border-border/60 bg-card/68 p-3">
-                        <div className="text-[11px] font-medium uppercase tracking-[0.22em] text-muted-foreground">
-                          Share ID
-                        </div>
-                        <div className="mt-2 font-mono text-xs text-foreground">{document.report.shareId}</div>
-                      </div>
-                      <div className="rounded-3xl border border-border/60 bg-card/68 p-3">
-                        <div className="text-[11px] font-medium uppercase tracking-[0.22em] text-muted-foreground">
-                          Domain
-                        </div>
-                        <div className="mt-2 text-xs text-foreground">{document.report.canonicalDomain}</div>
-                      </div>
-                      <div className="rounded-3xl border border-border/60 bg-card/68 p-3 sm:col-span-2">
-                        <div className="text-[11px] font-medium uppercase tracking-[0.22em] text-muted-foreground">
-                          Submitted URL
-                        </div>
-                        <div className="mt-2 break-all text-xs text-foreground">{document.report.normalizedInputUrl}</div>
-                      </div>
-                      <div className="rounded-3xl border border-border/60 bg-card/68 p-3">
-                        <div className="text-[11px] font-medium uppercase tracking-[0.22em] text-muted-foreground">
-                          Last updated
-                        </div>
-                        <div className="mt-2 text-xs text-foreground">{formatDateTime(lastUpdatedAt)}</div>
-                      </div>
-                      <div className="rounded-3xl border border-border/60 bg-card/68 p-3">
-                        <div className="text-[11px] font-medium uppercase tracking-[0.22em] text-muted-foreground">
-                          Status
-                        </div>
-                        <div className="mt-2 text-xs text-foreground">{primaryStatusLabel}</div>
-                      </div>
+                <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-start">
+                  <div className="flex min-w-0 flex-wrap items-start gap-2 rounded-[1.25rem] border border-border/50 bg-background/38 p-3 text-xs text-foreground/65 md:border-0 md:bg-transparent md:p-0 md:text-sm">
+                    <div className="inline-flex min-w-0 items-center gap-2 rounded-full border border-border/50 bg-background/62 px-3 py-1.5">
+                      <Link2 className="h-4 w-4 shrink-0 text-primary" />
+                      <span className="truncate">{document.report.canonicalDomain}</span>
                     </div>
-                  </details>
-                  <div className="flex flex-wrap gap-2">
+                    <div className="inline-flex items-center gap-2 rounded-full border border-border/50 bg-background/62 px-3 py-1.5">
+                      <RefreshCcw className="h-4 w-4 shrink-0 text-primary" />
+                      Updated {formatDateTime(lastUpdatedAt)}
+                    </div>
+                    <details className="w-full rounded-[1.25rem] border border-border/50 bg-background/62 px-3 py-1.5 text-xs text-foreground/70 sm:text-sm md:w-auto">
+                      <summary className="cursor-pointer list-none font-medium text-foreground [&::-webkit-details-marker]:hidden">
+                        Report metadata
+                      </summary>
+                      <div className="mt-3 grid gap-2.5 sm:grid-cols-2">
+                        <div className="rounded-3xl border border-border/60 bg-card/68 p-3">
+                          <div className="text-[11px] font-medium uppercase tracking-[0.22em] text-muted-foreground">
+                            Share ID
+                          </div>
+                          <div className="mt-2 font-mono text-xs text-foreground">{document.report.shareId}</div>
+                        </div>
+                        <div className="rounded-3xl border border-border/60 bg-card/68 p-3">
+                          <div className="text-[11px] font-medium uppercase tracking-[0.22em] text-muted-foreground">
+                            Domain
+                          </div>
+                          <div className="mt-2 text-xs text-foreground">{document.report.canonicalDomain}</div>
+                        </div>
+                        <div className="rounded-3xl border border-border/60 bg-card/68 p-3 sm:col-span-2">
+                          <div className="text-[11px] font-medium uppercase tracking-[0.22em] text-muted-foreground">
+                            Submitted URL
+                          </div>
+                          <div className="mt-2 break-all text-xs text-foreground">{document.report.normalizedInputUrl}</div>
+                        </div>
+                        <div className="rounded-3xl border border-border/60 bg-card/68 p-3">
+                          <div className="text-[11px] font-medium uppercase tracking-[0.22em] text-muted-foreground">
+                            Last updated
+                          </div>
+                          <div className="mt-2 text-xs text-foreground">{formatDateTime(lastUpdatedAt)}</div>
+                        </div>
+                        <div className="rounded-3xl border border-border/60 bg-card/68 p-3">
+                          <div className="text-[11px] font-medium uppercase tracking-[0.22em] text-muted-foreground">
+                            Status
+                          </div>
+                          <div className="mt-2 text-xs text-foreground">{primaryStatusLabel}</div>
+                        </div>
+                      </div>
+                    </details>
+                  </div>
+                  <div className="grid gap-2 rounded-[1.25rem] border border-border/50 bg-background/38 p-3 md:flex md:flex-wrap md:justify-end md:border-0 md:bg-transparent md:p-0">
                     {!markdownButtonState.disabled && markdownButtonState.href ? (
-                      <Button type="button" size="sm" asChild>
+                      <Button type="button" size="sm" className={heroActionButtonClass} asChild>
                         <a href={markdownButtonState.href}>
                           <Download className="h-4 w-4" />
                           {markdownButtonState.label}
                         </a>
                       </Button>
                     ) : (
-                      <Button type="button" size="sm" variant="outline" disabled>
+                      <Button type="button" size="sm" variant="outline" className={heroActionButtonClass} disabled>
                         <Download className="h-4 w-4" />
                         {markdownButtonState.label}
                       </Button>
                     )}
                     {!pdfButtonState.disabled && pdfButtonState.href ? (
-                      <Button type="button" size="sm" variant="outline" asChild>
+                      <Button type="button" size="sm" variant="outline" className={heroActionButtonClass} asChild>
                         <a href={pdfButtonState.href}>
                           <Download className="h-4 w-4" />
                           {pdfButtonState.label}
                         </a>
                       </Button>
                     ) : (
-                      <Button type="button" size="sm" variant="outline" disabled>
+                      <Button type="button" size="sm" variant="outline" className={heroActionButtonClass} disabled>
                         <Download className="h-4 w-4" />
                         {pdfButtonState.label}
                       </Button>
                     )}
                     {showHardFailureState ? (
-                      <Button type="button" size="sm" variant="outline" asChild>
+                      <Button type="button" size="sm" variant="outline" className={heroActionButtonClass} asChild>
                         <Link href={retryHref}>
                           <RefreshCcw className="h-4 w-4" />
                           Start a fresh run
@@ -944,18 +955,18 @@ export function ReportExperience({
                   </div>
                 </div>
 
-                {exportHelperText ? <p className="text-sm leading-7 text-foreground/70">{exportHelperText}</p> : null}
+                {exportHelperText ? <p className="text-sm leading-6 text-foreground/70 sm:leading-7">{exportHelperText}</p> : null}
               </div>
 
               {showSummaryHighlights ? (
-                <div className="grid gap-2.5 lg:grid-cols-3">
+                <div className="grid gap-3 lg:grid-cols-3">
                   {showMotionSummaryCard ? (
                     <div className="rounded-[1.5rem] border border-border/50 bg-background/68 p-4">
                       <div className="text-[11px] font-medium uppercase tracking-[0.22em] text-muted-foreground">
                         Recommended motion
                       </div>
                       <div className="mt-2 font-medium text-foreground">{motionRecommendation}</div>
-                      <p className="mt-2 text-sm leading-6 text-foreground/70">
+                      <p className="mt-2 text-sm leading-6 text-foreground/70 sm:leading-7">
                         {canonicalReport?.recommended_motion.rationale ?? accountPlan?.overallAccountMotion.rationale}
                       </p>
                     </div>
@@ -968,7 +979,7 @@ export function ReportExperience({
                       <div className={cn("mt-2 font-medium", confidenceTone(researchCompleteness))}>
                         {researchCompleteness !== null ? `${researchCompleteness}/100` : document.result.label}
                       </div>
-                      <p className="mt-2 text-sm leading-6 text-foreground/70">
+                      <p className="mt-2 text-sm leading-6 text-foreground/70 sm:leading-7">
                         {normalizeVisibleCopy(document.result.summary)}
                       </p>
                     </div>
@@ -985,7 +996,7 @@ export function ReportExperience({
                             : topOpportunity.workflowName
                           : null}
                       </div>
-                      <p className="mt-2 text-sm leading-6 text-foreground/70">{topOpportunity?.summary}</p>
+                      <p className="mt-2 text-sm leading-6 text-foreground/70 sm:leading-7">{topOpportunity?.summary}</p>
                     </div>
                   ) : null}
                   {showGroundedBriefSummaryCard ? (
@@ -993,7 +1004,7 @@ export function ReportExperience({
                       <div className="text-[11px] font-medium uppercase tracking-[0.22em] text-muted-foreground">
                         Grounded brief
                       </div>
-                      <p className="mt-2 text-sm leading-6 text-foreground/70">
+                      <p className="mt-2 text-sm leading-6 text-foreground/70 sm:leading-7">
                         {canonicalReport?.grounded_fallback?.summary ?? accountPlan?.groundedFallbackBrief?.summary}
                       </p>
                     </div>
@@ -1005,9 +1016,9 @@ export function ReportExperience({
 
           <nav
             aria-label="Report sections"
-            className="sticky top-[5rem] z-20 overflow-x-auto rounded-[1.5rem] border border-border/60 bg-panel/86 px-3 py-2.5 shadow-panel backdrop-blur-xl"
+            className="sticky top-[5rem] z-20 overflow-hidden rounded-[1.5rem] border border-border/60 bg-panel/86 px-3 py-2.5 shadow-panel backdrop-blur-xl"
           >
-            <div className="flex min-w-max flex-col gap-2.5">
+            <div className="flex min-w-0 flex-col gap-2.5">
               {isBuildingReport ? (
                 <div className="rounded-[1.25rem] border border-border/50 bg-background/74 px-4 py-2.5">
                   <div className="flex flex-wrap items-center justify-between gap-3">
@@ -1040,61 +1051,66 @@ export function ReportExperience({
                 </div>
               ) : null}
 
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div className="flex flex-wrap items-center gap-2">
-                  {primaryReportModes.map((mode) => (
+              <div className="flex min-w-0 flex-col gap-2">
+                <div className="-mx-1 overflow-x-auto px-1 pb-1">
+                  <div className="flex min-w-max items-center gap-2">
+                    {primaryReportModes.map((mode) => (
+                      <Button
+                        key={mode.id}
+                        type="button"
+                        size="sm"
+                        variant={reportMode === mode.id ? "secondary" : "outline"}
+                        className="shrink-0"
+                        onClick={() => setReportMode(mode.id)}
+                      >
+                        {mode.label}
+                      </Button>
+                    ))}
+                    <div className="h-5 w-px shrink-0 bg-border/60" />
                     <Button
-                      key={mode.id}
                       type="button"
                       size="sm"
-                      variant={reportMode === mode.id ? "secondary" : "outline"}
-                      onClick={() => setReportMode(mode.id)}
-                    >
-                      {mode.label}
-                    </Button>
-                  ))}
-                </div>
-                <div className="flex flex-wrap items-center gap-2">
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="outline"
-                    className={cn(
-                      reportMode === "build"
-                        ? "text-foreground"
-                        : "border-transparent bg-transparent text-foreground/70 hover:border-border/50",
-                    )}
-                    onClick={handleOpenBuildDetails}
-                  >
-                    Build details
-                  </Button>
-                  {hasSelectedSources ? (
-                    <Button
-                      type="button"
                       variant="outline"
-                      size="sm"
-                      className="xl:hidden"
-                      onClick={() => setIsMobileSourcePanelOpen(true)}
+                      className={cn(
+                        "shrink-0",
+                        reportMode === "build"
+                          ? "text-foreground"
+                          : "border-transparent bg-transparent text-foreground/70 hover:border-border/50",
+                      )}
+                      onClick={handleOpenBuildDetails}
                     >
-                      <BookOpenText className="h-4 w-4" />
-                      Sources
+                      Build details
                     </Button>
-                  ) : null}
+                    {hasSelectedSources ? (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="shrink-0 xl:hidden"
+                        onClick={() => setIsMobileSourcePanelOpen(true)}
+                      >
+                        <BookOpenText className="h-4 w-4" />
+                        Sources
+                      </Button>
+                    ) : null}
+                  </div>
                 </div>
-              </div>
-              <div className="flex min-w-max items-center gap-2">
-                <span className="hidden pl-2 text-[11px] font-medium uppercase tracking-[0.22em] text-muted-foreground sm:inline-flex">
-                  Jump to
-                </span>
-                {activeAnchorItems.map((item) => (
-                  <a
-                    key={item.id}
-                    href={`#${item.id}`}
-                    className="rounded-full px-3.5 py-1.5 text-sm text-muted-foreground transition hover:bg-accent hover:text-accent-foreground"
-                  >
-                    {item.label}
-                  </a>
-                ))}
+                <div className="-mx-1 overflow-x-auto px-1 pb-1">
+                  <div className="flex min-w-max items-center gap-2">
+                    <span className="pl-1 text-[11px] font-medium uppercase tracking-[0.22em] text-muted-foreground">
+                      Jump to
+                    </span>
+                    {activeAnchorItems.map((item) => (
+                      <a
+                        key={item.id}
+                        href={`#${item.id}`}
+                        className="shrink-0 whitespace-nowrap rounded-full px-3.5 py-1.5 text-sm text-muted-foreground transition hover:bg-accent hover:text-accent-foreground"
+                      >
+                        {item.label}
+                      </a>
+                    ))}
+                  </div>
+                </div>
               </div>
             </div>
           </nav>
@@ -1113,16 +1129,16 @@ export function ReportExperience({
                 title="Executive summary"
                 description="Seller-ready summary of account context, recommended motion, and the main evidence caveats."
               >
-                <div className={cn("grid gap-3.5", currentRun ? "lg:grid-cols-[1.15fr_0.85fr]" : "lg:grid-cols-1")}>
+                <div className={cn("grid gap-4", currentRun ? "lg:grid-cols-[1.15fr_0.85fr]" : "lg:grid-cols-1")}>
                   {(canonicalReport || accountPlan) && !isGroundedFallbackBrief ? (
                     <Card className="border-strong/70 bg-card/80 shadow-panel">
-                      <CardHeader className="space-y-3">
+                      <CardHeader className="space-y-2.5">
                         <CardTitle className="flex items-center gap-2 text-2xl">
                           <Target className="h-5 w-5 text-primary" />
                           Recommended motion
                         </CardTitle>
                       </CardHeader>
-                      <CardContent className="space-y-4">
+                      <CardContent className={reportCardFlowClass}>
                         <div className="flex flex-wrap items-center gap-3">
                           <Badge className="rounded-full px-4 py-1.5 uppercase" variant="secondary">
                             {motionRecommendation}
@@ -1133,7 +1149,7 @@ export function ReportExperience({
                             </span>
                           ) : null}
                         </div>
-                        <p className="text-sm leading-7 text-muted-foreground">
+                        <p>
                           {canonicalReport?.recommended_motion.rationale ?? accountPlan?.overallAccountMotion.rationale}
                         </p>
                         {topOpportunity ? (
@@ -1162,13 +1178,13 @@ export function ReportExperience({
 
                   {(canonicalReport || accountPlan) && isGroundedFallbackBrief ? (
                   <Card className="border-strong/70 bg-card/80 shadow-panel">
-                    <CardHeader className="space-y-3">
+                    <CardHeader className="space-y-2.5">
                       <CardTitle className="flex items-center gap-2 text-2xl">
                           <Target className="h-5 w-5 text-primary" />
                           Grounded brief
                         </CardTitle>
                       </CardHeader>
-                      <CardContent className="space-y-4">
+                      <CardContent className={reportCardFlowClass}>
                         <div className="flex flex-wrap items-center gap-3">
                           <Badge className="rounded-full px-4 py-1.5 uppercase" variant="secondary">
                             Grounded brief
@@ -1179,7 +1195,7 @@ export function ReportExperience({
                             </span>
                           ) : null}
                         </div>
-                        <p className="text-sm leading-7 text-muted-foreground">
+                        <p>
                           {canonicalReport?.grounded_fallback?.summary ?? accountPlan?.groundedFallbackBrief?.summary}
                         </p>
                         {(canonicalReport?.grounded_fallback?.opportunity_hypothesis_note ??
@@ -1206,10 +1222,10 @@ export function ReportExperience({
                   ) : null}
 
                   <Card className="border-strong/70 bg-card/80 shadow-panel">
-                    <CardHeader className="space-y-3">
+                    <CardHeader className="space-y-2.5">
                       <CardTitle className="text-2xl">Company context</CardTitle>
                     </CardHeader>
-                    <CardContent className="space-y-4 text-sm leading-7 text-muted-foreground">
+                    <CardContent className={reportCardFlowClass}>
                       <div>
                         <div className="font-medium text-foreground">{companyDisplayName}</div>
                         <div>
@@ -1284,7 +1300,7 @@ export function ReportExperience({
 
               {showBriefReadiness ? (
                 <Card className="border-border/60 bg-card/74 shadow-none">
-                  <CardHeader className="space-y-2 p-5">
+                  <CardHeader className="space-y-2.5 p-5">
                     <CardTitle className="text-xl">Brief readiness</CardTitle>
                     <p className="text-sm leading-6 text-foreground/70">
                       This quick map stays secondary while the report is finishing. Sections appear here once the saved brief has usable evidence.
@@ -1328,14 +1344,14 @@ export function ReportExperience({
                   title="Top opportunities"
                   description="Start with the highest-priority AI opportunities, then open the full list if needed."
                 >
-                  <div className="space-y-4">
+                  <div className="space-y-5 sm:space-y-4">
                     <div className="grid gap-4 lg:grid-cols-3">
                       {(canonicalReport ? canonicalTopOpportunities.slice(0, 3) : accountPlan?.topUseCases ?? []).map((useCase) => {
                         const item = getRenderableOpportunity(useCase);
 
                         return (
                           <Card key={`top-${item.key}`} className="border-strong/70 bg-card/85 shadow-panel">
-                            <CardHeader className="space-y-3">
+                            <CardHeader className="space-y-2.5">
                               <div className="flex items-center justify-between gap-3">
                                 <Badge variant="secondary" className="rounded-full px-3 py-1">
                                   Top {item.priorityRank}
@@ -1347,7 +1363,7 @@ export function ReportExperience({
                               <CardTitle className="text-xl">{item.workflowName}</CardTitle>
                               <p className="text-sm text-muted-foreground">{formatDepartmentLabel(item.department)}</p>
                             </CardHeader>
-                            <CardContent className="space-y-4 text-sm leading-7 text-muted-foreground">
+                            <CardContent className={reportCardFlowClass}>
                               <p>{item.summary}</p>
                               <div className="rounded-3xl border border-border/70 bg-background/70 p-4">
                                 <div className="font-medium text-foreground">Expected outcome</div>
@@ -1379,7 +1395,7 @@ export function ReportExperience({
 
                             return (
                               <Card key={item.key} className="border-strong/70 bg-card/80 shadow-none">
-                                <CardHeader className="space-y-3">
+                                <CardHeader className="space-y-2.5">
                                   <div className="flex flex-wrap items-center justify-between gap-3">
                                     <div className="space-y-1">
                                       <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">
@@ -1397,7 +1413,7 @@ export function ReportExperience({
                                     </div>
                                   </div>
                                 </CardHeader>
-                                <CardContent className="space-y-4 text-sm leading-7 text-muted-foreground">
+                                <CardContent className={reportCardFlowClass}>
                                   <p>{item.summary}</p>
                                   <div className="grid gap-3 sm:grid-cols-2">
                                     <div className="rounded-3xl border border-border/70 bg-background/70 p-4">
@@ -1526,7 +1542,7 @@ export function ReportExperience({
 
                       return (
                         <Card key={`hypothesis-${item.key}`} className="border-strong/70 bg-card/80 shadow-none">
-                          <CardHeader className="space-y-3">
+                          <CardHeader className="space-y-2.5">
                             <div className="flex items-center justify-between gap-3">
                               <Badge variant="secondary" className="rounded-full px-3 py-1">
                                 Hypothesis
@@ -1538,7 +1554,7 @@ export function ReportExperience({
                             <CardTitle className="text-xl">{item.workflowName}</CardTitle>
                             <p className="text-sm text-muted-foreground">{formatDepartmentLabel(item.department)}</p>
                           </CardHeader>
-                          <CardContent className="space-y-4 text-sm leading-7 text-muted-foreground">
+                          <CardContent className={reportCardFlowClass}>
                             <p>{item.summary}</p>
                             <div className="rounded-3xl border border-border/70 bg-background/70 p-4">
                               <div className="font-medium text-foreground">Why it may matter</div>
@@ -1580,13 +1596,13 @@ export function ReportExperience({
                               key={`${item.likelyRole}-${item.hypothesis}`}
                               className="border-strong/70 bg-card/80 shadow-none"
                             >
-                              <CardHeader className="space-y-2">
+                              <CardHeader className="space-y-2.5">
                                 <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">
                                   {item.department ?? "Cross-functional"}
                                 </div>
                                 <CardTitle className="text-xl">{item.likelyRole}</CardTitle>
                               </CardHeader>
-                              <CardContent className="space-y-3 text-sm leading-7 text-muted-foreground">
+                              <CardContent className={reportCardFlowCompactClass}>
                                 <p>{item.hypothesis}</p>
                                 <p>{item.rationale}</p>
                                 <Badge variant="outline" className="rounded-full px-3 py-1">
@@ -1611,7 +1627,7 @@ export function ReportExperience({
                             <CardHeader>
                               <CardTitle className="text-xl">Likely objections</CardTitle>
                             </CardHeader>
-                            <CardContent className="space-y-4">
+                            <CardContent className={reportCardFlowClass}>
                               {objections.map((item) => {
                                 const objection = getRenderableObjection(item);
 
@@ -1638,7 +1654,7 @@ export function ReportExperience({
                             <CardHeader>
                               <CardTitle className="text-xl">Discovery questions</CardTitle>
                             </CardHeader>
-                            <CardContent className="space-y-4">
+                            <CardContent className={reportCardFlowClass}>
                               {discoveryQuestions.map((item) => {
                                 const question = getRenderableDiscoveryQuestion(item);
 
@@ -1672,9 +1688,9 @@ export function ReportExperience({
                   title="90-day pilot"
                   description="Start with a conservative 90-day pilot aligned to the current motion recommendation."
                 >
-                  <div className="space-y-4">
+                  <div className="space-y-5 sm:space-y-4">
                     <Card className="border-strong/70 bg-card/85 shadow-panel">
-                      <CardHeader className="space-y-3">
+                      <CardHeader className="space-y-2.5">
                         <div className="flex flex-wrap items-center justify-between gap-3">
                             <CardTitle className="text-2xl">Pilot recommendation</CardTitle>
                           <Badge variant="secondary" className="rounded-full px-3 py-1">
@@ -1684,7 +1700,7 @@ export function ReportExperience({
                           </Badge>
                         </div>
                       </CardHeader>
-                      <CardContent className="grid gap-4 lg:grid-cols-[1fr_0.9fr]">
+                      <CardContent className={cn("grid gap-4 lg:grid-cols-[1fr_0.9fr]", reportBodyTextClass)}>
                         <div className="space-y-4">
                           <div className="rounded-3xl border border-border/70 bg-background/70 p-4">
                             <div className="font-medium text-foreground">Objective</div>
@@ -1736,11 +1752,11 @@ export function ReportExperience({
                     <div className="grid gap-4 xl:grid-cols-3">
                       {pilotPlan.phases.map((phase) => (
                         <Card key={phase.name} className="border-strong/70 bg-card/80 shadow-none">
-                          <CardHeader className="space-y-2">
+                          <CardHeader className="space-y-2.5">
                             <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">{phase.duration}</div>
                             <CardTitle className="text-xl">{phase.name}</CardTitle>
                           </CardHeader>
-                          <CardContent className="grid gap-3 text-sm leading-7 text-muted-foreground">
+                          <CardContent className={cn("grid gap-3", reportBodyTextClass)}>
                             <div className="rounded-3xl border border-border/70 bg-background/70 p-4">
                               <div className="font-medium text-foreground">Goals</div>
                               <ul className="mt-2 space-y-1">
@@ -1773,10 +1789,10 @@ export function ReportExperience({
                   className="scroll-mt-32 rounded-[1.75rem] border border-border/70 bg-card/80"
                 >
                   <summary className="cursor-pointer list-none px-6 py-6 [&::-webkit-details-marker]:hidden">
-                    <div className="space-y-2">
+                    <div className="space-y-2.5">
                       <p className="text-xs font-medium uppercase tracking-[0.24em] text-muted-foreground">Brief</p>
                       <h2 className="text-3xl leading-tight text-primary">Expansion</h2>
-                      <p className="max-w-2xl text-sm leading-6 text-foreground/70 sm:text-base">
+                      <p className={reportSectionDescriptionClass}>
                         Expansion paths stay explicit about assumptions and upside.
                       </p>
                     </div>
@@ -1797,7 +1813,7 @@ export function ReportExperience({
                           <CardHeader>
                             <CardTitle className="text-xl">{label}</CardTitle>
                           </CardHeader>
-                          <CardContent className="space-y-4 text-sm leading-7 text-muted-foreground">
+                          <CardContent className={reportCardFlowClass}>
                             <p>{scenario.summary}</p>
                             <div className="rounded-3xl border border-border/70 bg-background/70 p-4">
                               <div className="font-medium text-foreground">Assumptions</div>
@@ -1848,9 +1864,9 @@ export function ReportExperience({
                       <CardHeader>
                         <CardTitle className="text-xl">Executive summary</CardTitle>
                       </CardHeader>
-                      <CardContent className="min-w-0 space-y-4">
+                      <CardContent className={cn("min-w-0 space-y-4", reportBodyTextClass)}>
                         <div className="min-w-0 overflow-hidden rounded-3xl border border-border/70 bg-background/70 p-4">
-                          <p className="text-sm leading-7 text-muted-foreground">{canonicalReport.executive_summary.summary}</p>
+                          <p>{canonicalReport.executive_summary.summary}</p>
                           <div className="mt-3 min-w-0">
                             <EvidencePills
                               sourceIds={canonicalCitationSourceIds(canonicalReport.executive_summary.citations)}
@@ -1876,7 +1892,7 @@ export function ReportExperience({
                       <CardHeader>
                         <CardTitle className="text-xl">Signal summary</CardTitle>
                       </CardHeader>
-                      <CardContent className="grid min-w-0 gap-4">
+                      <CardContent className={cn("grid min-w-0 gap-4", reportBodyTextClass)}>
                         {[
                           {
                             label: "AI maturity",
@@ -1911,9 +1927,9 @@ export function ReportExperience({
                       <CardHeader>
                         <CardTitle className="text-xl">Company brief</CardTitle>
                       </CardHeader>
-                      <CardContent className="min-w-0 space-y-4">
+                      <CardContent className={cn("min-w-0 space-y-4", reportBodyTextClass)}>
                         <div className="min-w-0 overflow-hidden rounded-3xl border border-border/70 bg-background/70 p-4">
-                          <p className="text-sm leading-7 text-muted-foreground">{canonicalReport.company.company_brief}</p>
+                          <p>{canonicalReport.company.company_brief}</p>
                           <div className="mt-3 min-w-0">
                             <EvidencePills
                               sourceIds={canonicalCitationSourceIds(canonicalReport.company.citations)}
@@ -1929,14 +1945,14 @@ export function ReportExperience({
                       <CardHeader>
                         <CardTitle className="text-xl">Notable signals</CardTitle>
                       </CardHeader>
-                      <CardContent className="min-w-0 space-y-4">
+                      <CardContent className={cn("min-w-0 space-y-4", reportBodyTextClass)}>
                         {canonicalReport.ai_maturity_signals.notable_signals.length > 0 ? (
                           canonicalReport.ai_maturity_signals.notable_signals.map((item, index) => (
                             <div
                               key={`${item.summary}-${index}`}
                               className="min-w-0 overflow-hidden rounded-3xl border border-border/70 bg-background/70 p-4"
                             >
-                              <p className="text-sm leading-7 text-muted-foreground">{item.summary}</p>
+                              <p>{item.summary}</p>
                               <div className="mt-3 min-w-0">
                                 <EvidencePills
                                   sourceIds={canonicalCitationSourceIds(item.citations)}
@@ -1963,14 +1979,14 @@ export function ReportExperience({
                         <CardHeader>
                           <CardTitle className="text-xl">Growth priorities</CardTitle>
                         </CardHeader>
-                        <CardContent className="min-w-0 space-y-4">
+                        <CardContent className={cn("min-w-0 space-y-4", reportBodyTextClass)}>
                           {researchSummary.growthPriorities.length > 0 ? (
                             researchSummary.growthPriorities.map((item, index) => (
                               <div
                                 key={`${item.summary}-${index}`}
                                 className="min-w-0 overflow-hidden rounded-3xl border border-border/70 bg-background/70 p-4"
                               >
-                                <p className="text-sm leading-7 text-muted-foreground">{item.summary}</p>
+                                <p>{item.summary}</p>
                                 <div className="mt-3 min-w-0">
                                   <EvidencePills
                                     sourceIds={item.sourceIds}
@@ -1995,7 +2011,7 @@ export function ReportExperience({
                       <CardHeader>
                         <CardTitle className="text-xl">Signal summary</CardTitle>
                       </CardHeader>
-                      <CardContent className="grid min-w-0 gap-4">
+                      <CardContent className={cn("grid min-w-0 gap-4", reportBodyTextClass)}>
                         {[
                           {
                             label: "AI maturity",
@@ -2039,14 +2055,14 @@ export function ReportExperience({
                           <CardHeader>
                             <CardTitle className="text-xl">{group.title}</CardTitle>
                           </CardHeader>
-                          <CardContent className="min-w-0 space-y-4">
+                          <CardContent className={cn("min-w-0 space-y-4", reportBodyTextClass)}>
                             {group.items.length > 0 ? (
                               group.items.map((item, index) => (
                                 <div
                                   key={`${group.title}-${index}`}
                                   className="min-w-0 overflow-hidden rounded-3xl border border-border/70 bg-background/70 p-4"
                                 >
-                                  <p className="text-sm leading-7 text-muted-foreground">{item.summary}</p>
+                                  <p>{item.summary}</p>
                                   <div className="mt-3 min-w-0">
                                     <EvidencePills
                                       sourceIds={item.sourceIds}
@@ -2079,7 +2095,7 @@ export function ReportExperience({
                   <CardHeader>
                     <CardTitle className="text-2xl">Fact base</CardTitle>
                   </CardHeader>
-                  <CardContent className="min-w-0 space-y-4">
+                  <CardContent className={cn("min-w-0 space-y-4", reportBodyTextClass)}>
                     {canonicalReport && factBase.length > 0 ? (
                       factBase.map((fact, index) => (
                         <div
@@ -2181,8 +2197,8 @@ export function ReportExperience({
                     {document.sources.map((source) => (
                       <Card key={source.id} className="border-strong/70 bg-card/80 shadow-none">
                         <CardContent className="flex flex-col gap-4 p-5 lg:flex-row lg:items-start lg:justify-between">
-                          <div className="min-w-0 flex-1 space-y-3">
-                            <div className="flex flex-wrap items-center gap-2">
+                          <div className={cn("min-w-0 flex-1 space-y-3.5", reportBodyTextClass)}>
+                            <div className="flex flex-wrap items-center gap-2.5">
                               <Badge variant="secondary" className="rounded-full px-3 py-1">
                                 Source {getDisplaySourceId(source)}
                               </Badge>
@@ -2197,10 +2213,10 @@ export function ReportExperience({
                               <div className="font-medium text-foreground">{source.title}</div>
                               <div className="mt-1 break-all text-sm text-muted-foreground">{source.url}</div>
                             </div>
-                            <p className="text-sm leading-7 text-muted-foreground">
+                            <p>
                               {source.summary ?? "No normalized source summary is available yet for this item."}
                             </p>
-                            <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
+                            <div className="flex flex-wrap gap-2.5 text-xs text-muted-foreground">
                               <span className="rounded-full border border-border/70 bg-background/70 px-3 py-1">
                                 Domain: {source.canonicalDomain}
                               </span>
@@ -2251,12 +2267,12 @@ export function ReportExperience({
               {showHardFailureState ? (
                 <Card className="border-destructive/20 bg-destructive/5 shadow-panel">
                   <CardContent className="flex flex-col gap-4 p-6 sm:flex-row sm:items-start sm:justify-between">
-                    <div className="space-y-2">
+                    <div className="space-y-2.5">
                       <div className="flex items-center gap-2 font-medium text-destructive">
                         <AlertCircle className="h-4 w-4" />
                         Report build failed
                       </div>
-                      <p className="max-w-2xl text-sm leading-7 text-destructive">
+                      <p className="max-w-2xl text-sm leading-6 text-destructive sm:leading-7">
                         {normalizeVisibleCopy(currentRun?.errorMessage ?? currentRun?.statusMessage ?? "The latest run failed.")}
                       </p>
                     </div>
@@ -2274,7 +2290,7 @@ export function ReportExperience({
 
               {showCompactPendingSections ? (
                 pendingSectionTargets.length > 0 || pendingSourceTarget ? (
-                  <div className="space-y-3">
+                  <div className="space-y-3.5">
                     <div className="flex flex-wrap items-center justify-between gap-3">
                       <div className="text-sm font-medium text-foreground">Sections in progress</div>
                       <div className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
@@ -2337,7 +2353,7 @@ export function ReportExperience({
                             {section.confidence !== null ? `${section.confidence}/100` : "Pending"}
                           </Badge>
                         </div>
-                        <p className="text-sm leading-7 text-muted-foreground">
+                        <p className="text-sm leading-6 text-muted-foreground sm:leading-7">
                           {section.confidenceRationale
                             ? normalizeVisibleCopy(section.confidenceRationale)
                             : "Section confidence will be scored once evidence reaches this part of the report."}

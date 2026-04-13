@@ -31,18 +31,18 @@ export function EvidencePills({
   const hiddenCount = resolvedSources.length - visibleSources.length;
 
   return (
-    <div className="min-w-0 flex flex-wrap gap-2">
+    <div className="min-w-0 -mx-1 flex flex-wrap items-start gap-2.5 px-1 py-1">
       {visibleSources.map((source) => (
         <Button
           key={source.id}
           type="button"
           size="sm"
           variant="outline"
-          className="h-auto min-w-0 max-w-full justify-start gap-2 rounded-full px-3 py-1.5 text-left"
+          className="h-auto min-w-0 max-w-full justify-start gap-2 rounded-full px-3 py-1.5 text-left leading-5"
           onClick={() => onSelectSources([source.id])}
         >
           <Link2 className="h-3.5 w-3.5 shrink-0 text-primary" />
-          <span className="min-w-0 truncate text-xs">
+          <span className="min-w-0 truncate text-xs leading-5">
             S{getDisplaySourceId(source)} · {source.title}
           </span>
         </Button>
@@ -53,7 +53,7 @@ export function EvidencePills({
           type="button"
           size="sm"
           variant="outline"
-          className="h-auto rounded-full px-3 py-1.5 text-xs"
+          className="h-auto rounded-full px-3 py-1.5 text-xs leading-5"
           onClick={() => onSelectSources(resolvedSources.map((source) => source.id))}
         >
           +{hiddenCount} more
