@@ -649,6 +649,7 @@ export function ReportExperience({
     ? hasCanonicalExpansionScenario(canonicalReport)
     : Boolean(accountPlan?.expansionScenarios.low ?? accountPlan?.expansionScenarios.base ?? accountPlan?.expansionScenarios.high);
   const hasSourcesContent = document.sources.length > 0;
+  const showExpansionPlaceholder = isBuildingReport && !hasExpansionContent;
   const showResearchSection = !isBuildingReport || hasResearchContent;
   const showUseCasesSection = !isBuildingReport || hasPlanningContent || hasGroundedHypothesisContent;
   const showStakeholdersSection = !isBuildingReport || hasStakeholderContent || hasDiscoveryContent;
@@ -1834,7 +1835,7 @@ export function ReportExperience({
                 </ReportSection>
               ) : null}
 
-              {(canonicalReport || accountPlan) && hasExpansionContent ? (
+              {hasExpansionContent ? (
                 <details
                   id="expansion-scenarios"
                   open={isExpansionOpen}
@@ -1899,6 +1900,53 @@ export function ReportExperience({
                     </div>
                   </div>
                 </details>
+              ) : showExpansionPlaceholder ? (
+                <section id="expansion-scenarios" className="scroll-mt-32 space-y-6 border-t border-border/60 pt-8 sm:pt-9">
+                  <div className="space-y-3">
+                    <div className="h-px w-16 bg-gradient-to-r from-primary/40 to-transparent" />
+                    <p className="text-xs font-medium uppercase tracking-[0.24em] text-muted-foreground">Brief</p>
+                    <div className="space-y-2.5">
+                      <div className="flex flex-wrap items-center gap-3">
+                        <h2 className="text-3xl leading-tight text-primary sm:text-4xl">Expansion</h2>
+                        <Badge className="rounded-full px-3 py-1" variant="outline">
+                          <LoaderCircle className="mr-1 h-3 w-3 animate-spin" />
+                          In progress
+                        </Badge>
+                      </div>
+                      <p className={reportSectionDescriptionClass}>Expansion scenarios are still being prepared.</p>
+                    </div>
+                  </div>
+                  <div className="grid gap-4 xl:grid-cols-3">
+                    {["Low case", "Base case", "High case"].map((label) => (
+                      <Card key={label} className="border-border/60 bg-card/70 shadow-none">
+                        <CardHeader className="space-y-3">
+                          <CardTitle className="text-xl text-foreground/80">{label}</CardTitle>
+                          <div className="h-4 w-20 animate-pulse rounded-full bg-muted" />
+                        </CardHeader>
+                        <CardContent className="space-y-4">
+                          <div className="space-y-2">
+                            <div className="h-4 w-full animate-pulse rounded-full bg-muted" />
+                            <div className="h-4 w-5/6 animate-pulse rounded-full bg-muted" />
+                          </div>
+                          <div className="rounded-3xl border border-border/70 bg-background/70 p-4">
+                            <div className="h-3 w-24 animate-pulse rounded-full bg-muted" />
+                            <div className="mt-3 space-y-2">
+                              <div className="h-3 w-full animate-pulse rounded-full bg-muted" />
+                              <div className="h-3 w-4/5 animate-pulse rounded-full bg-muted" />
+                            </div>
+                          </div>
+                          <div className="rounded-3xl border border-border/70 bg-background/70 p-4">
+                            <div className="h-3 w-32 animate-pulse rounded-full bg-muted" />
+                            <div className="mt-3 space-y-2">
+                              <div className="h-3 w-full animate-pulse rounded-full bg-muted" />
+                              <div className="h-3 w-3/4 animate-pulse rounded-full bg-muted" />
+                            </div>
+                          </div>
+                        </CardContent>
+                      </Card>
+                    ))}
+                  </div>
+                </section>
               ) : null}
             </>
           ) : null}
