@@ -1,3 +1,5 @@
+import "server-only";
+
 import { createHash, timingSafeEqual } from "node:crypto";
 
 const QUEUE_PROXY_CONTEXT = "account-atlas.report-run-queue.proxy";

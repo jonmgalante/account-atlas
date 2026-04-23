@@ -47,6 +47,12 @@ pnpm dev
 
 6. Open [http://localhost:3000](http://localhost:3000), submit a public company URL, and follow the public report page.
 
+## Env File Hygiene
+
+- Use `.env.example` as the template for local development and copy it to `.env.local`.
+- Keep real secrets in `.env.local`, shell env vars, or Vercel project env vars only. Do not commit `.env`, `.env.local`, or other `.env.*` files.
+- Configure Vercel environment variables outside the repo. Local report generation needs `DATABASE_URL` and `OPENAI_API_KEY`; `REQUEST_FINGERPRINT_SALT` is recommended for production-like runs.
+
 ## Required Env Vars
 
 - `DATABASE_URL`

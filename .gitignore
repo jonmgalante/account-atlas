@@ -1,6 +1,10 @@
 .next
 coverage
 node_modules
+.env
+.env.local
+.env.*
+!.env.example
 *.tsbuildinfo
 vitest.config.ts.timestamp-*
 *.log
